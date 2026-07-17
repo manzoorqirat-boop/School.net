@@ -1,1 +1,214 @@
+using System.Linq.Expressions;
+using System.Reflection;
+using Microsoft.EntityFrameworkCore;
+using QMSoft.Api.Data.Configurations;
+using QMSoft.Api.Domain.Entities;
+using QMSoft.Api.Infrastructure.Crypto;
+using QMSoft.Api.Infrastructure.Tenancy;
 
+namespace QMSoft.Api.Data;
+
+/// <summary>
+/// The tenant filter lives here, once, for every tenant-scoped entity.
+///
+/// The Node original spread `{ schoolId: req.tenantId }` by hand across every
+/// query — forget it once and School A reads School B. This makes that
+/// structurally impossible: a handler cannot opt in to a leak, only explicitly
+/// out (IgnoreQueryFilters), which greps cleanly in review.
+/// </summary>
+public class AppDbContext : DbContext
+{
+    private readonly ITenantContext _tenant;
+    private readonly ICryptoService _crypto;
+
+    public AppDbContext(
+        DbContextOptions<AppDbContext> options,
+        ITenantContext tenant,
+        ICryptoService crypto)
+        : base(options)
+    {
+        _tenant = tenant;
+        _crypto = crypto;
+    }
+
+    public DbSet<School> Schools => Set<School>();
+    public DbSet<SchoolLeaveType> SchoolLeaveTypes => Set<SchoolLeaveType>();
+    public DbSet<User> Users => Set<User>();
+    public DbSet<UserRefreshToken> UserRefreshTokens => Set<UserRefreshToken>();
+    public DbSet<Student> Students => Set<Student>();
+    public DbSet<StudentPassedExam> StudentPassedExams => Set<StudentPassedExam>();
+    public DbSet<StudentSibling> StudentSiblings => Set<StudentSibling>();
+    public DbSet<Attendance> Attendance => Set<Attendance>();
+    public DbSet<TeacherAttendance> TeacherAttendance => Set<TeacherAttendance>();
+    public DbSet<ClassTeacher> ClassTeachers => Set<ClassTeacher>();
+    public DbSet<Subject> Subjects => Set<Subject>();
+
+    protected override void OnModelCreating(ModelBuilder b)
+    {
+        base.OnModelCreating(b);
+
+        b.HasPostgresExtension("citext");    // case-insensitive username/email/slug
+        b.HasPostgresExtension("pg_trgm");   // ILIKE student search
+
+        // Native Postgres enums.
+        //
+        // ⚠️ Labels are passed EXPLICITLY. The parameterless HasPostgresEnum<T>()
+        // derives labels by snake_casing the CLR member names — the exact rule
+        // that produces 'super_admin', 'g_e_n' and 'hindu' instead of
+        // 'superadmin', 'GEN' and 'Hindu'. The DB labels must match the wire
+        // values in Enums.cs, or Npgsql throws on every read.
+        b.HasPostgresEnum("user_role",
+            ["superadmin", "school_admin", "principal", "accountant",
+             "teacher", "parent", "student"]);
+        b.HasPostgresEnum("school_type", ["k12", "coaching", "college", "other"]);
+        b.HasPostgresEnum("school_plan", ["trial", "basic", "pro", "enterprise"]);
+        b.HasPostgresEnum("student_status",
+            ["active", "inactive", "transferred", "graduated"]);
+        b.HasPostgresEnum("gender", ["male", "female", "other"]);
+        b.HasPostgresEnum("student_category", ["GEN", "OBC", "SC", "ST", "EWS"]);
+        b.HasPostgresEnum("religion",
+            ["Hindu", "Muslim", "Sikh", "Christian", "Buddhist", "Jain", "Other"]);
+        b.HasPostgresEnum("transport_mode", ["self", "school_bus", "walk", "other"]);
+        b.HasPostgresEnum("sibling_relation", ["brother", "sister"]);
+        b.HasPostgresEnum("attendance_status",
+            ["present", "absent", "late", "leave", "holiday"]);
+        b.HasPostgresEnum("attendance_mode", ["daily", "period"]);
+        b.HasPostgresEnum("teacher_attendance_status",
+            ["present", "absent", "half_day", "leave", "unpaid_leave",
+             "on_duty", "holiday"]);
+
+        // SchoolConfiguration needs ICryptoService, so it cannot be discovered by
+        // ApplyConfigurationsFromAssembly (which requires a parameterless ctor).
+        // Applied explicitly; the rest are scanned.
+        b.ApplyConfiguration(new SchoolConfiguration(_crypto));
+        b.ApplyConfigurationsFromAssembly(
+            Assembly.GetExecutingAssembly(),
+            t => t != typeof(SchoolConfiguration));
+
+        ApplyGlobalFilters(b);
+    }
+
+    /// <summary>
+    /// EF Core allows exactly ONE query filter per entity type — a second
+    /// HasQueryFilter() silently REPLACES the first. Tenant and soft-delete must
+    /// therefore compose into a single expression per entity.
+    /// </summary>
+    private void ApplyGlobalFilters(ModelBuilder b)
+    {
+        foreach (var et in b.Model.GetEntityTypes())
+        {
+            var clr = et.ClrType;
+
+            // School is the tenant root — a filter on it would be self-referential
+            // and would hide every school from the superadmin school list.
+            if (clr == typeof(School)) continue;
+
+            // User carries a NULLABLE SchoolId (superadmin has none), so it can't
+            // implement ITenantScoped. Filtered explicitly below.
+            if (clr == typeof(User)) continue;
+
+            var tenantScoped = typeof(ITenantScoped).IsAssignableFrom(clr);
+            var softDelete = typeof(ISoftDeletable).IsAssignableFrom(clr);
+            if (!tenantScoped && !softDelete) continue;
+
+            var p = Expression.Parameter(clr, "e");
+            Expression? body = null;
+
+            if (tenantScoped)
+                body = TenantPredicate(Expression.Property(p, nameof(ITenantScoped.SchoolId)));
+
+            if (softDelete)
+            {
+                var notDeleted = Expression.Not(
+                    Expression.Property(p, nameof(ISoftDeletable.IsDeleted)));
+                body = body is null ? notDeleted : Expression.AndAlso(body, notDeleted);
+            }
+
+            b.Entity(clr).HasQueryFilter(Expression.Lambda(body!, p));
+        }
+
+        // ── User: nullable tenant ─────────────────────────────────────────
+        // A superadmin row has school_id = NULL. Under this predicate,
+        // `NULL == <someGuid>` is false, so a school_admin cannot see
+        // superadmins — correct and intended.
+        b.Entity<User>().HasQueryFilter(u =>
+            !CurrentTenant.IsFilterActive || u.SchoolId == CurrentTenant.SchoolId);
+    }
+
+    /// <summary>
+    /// Builds: !CurrentTenant.IsFilterActive || e.SchoolId == CurrentTenant.SchoolId
+    ///
+    /// Reads the tenant through a PROPERTY on `this`, never a captured constant.
+    /// EF compiles and caches the filter once per model; baking in request #1's
+    /// Guid would serve School A's rows to every later request — the exact leak
+    /// this class exists to prevent.
+    /// </summary>
+    private Expression TenantPredicate(Expression schoolIdProp)
+    {
+        var self = Expression.Constant(this);
+        var tenant = Expression.Property(self, nameof(CurrentTenant));
+
+        var currentSchool = Expression.Property(tenant, nameof(ITenantContext.SchoolId));
+        var filterActive = Expression.Property(tenant, nameof(ITenantContext.IsFilterActive));
+
+        var matches = Expression.Equal(
+            Expression.Convert(schoolIdProp, typeof(Guid?)),
+            currentSchool);
+
+        return Expression.OrElse(Expression.Not(filterActive), matches);
+    }
+
+    /// <summary>Public so the compiled filter expressions can reach it.</summary>
+    public ITenantContext CurrentTenant => _tenant;
+
+    public override int SaveChanges()
+    {
+        Stamp();
+        return base.SaveChanges();
+    }
+
+    public override Task<int> SaveChangesAsync(CancellationToken ct = default)
+    {
+        Stamp();
+        return base.SaveChangesAsync(ct);
+    }
+
+    /// <summary>
+    /// Replaces 20+ identical `pre('save')` hooks setting updatedAt — which did
+    /// not fire on updateOne(), so updatedAt is already unreliable in the Mongo
+    /// app. This one cannot be missed.
+    /// </summary>
+    private void Stamp()
+    {
+        var now = DateTime.UtcNow;
+
+        foreach (var e in ChangeTracker.Entries())
+        {
+            if (e.Entity is IAuditable a)
+            {
+                if (e.State == EntityState.Added) a.CreatedAt = now;
+                if (e.State is EntityState.Added or EntityState.Modified) a.UpdatedAt = now;
+            }
+
+            // Stamp the tenant on insert so a handler cannot create a row into the
+            // wrong school (or none) and have the filter hide it forever.
+            if (e.State == EntityState.Added
+                && e.Entity is ITenantScoped t
+                && t.SchoolId == Guid.Empty
+                && _tenant.SchoolId.HasValue)
+            {
+                t.SchoolId = _tenant.SchoolId.Value;
+            }
+
+            // Intercept Remove() → soft delete. Handlers should set IsDeleted
+            // directly; this is belt-and-braces so a stray .Remove() cannot
+            // hard-delete a student.
+            if (e.State == EntityState.Deleted && e.Entity is ISoftDeletable s)
+            {
+                e.State = EntityState.Modified;
+                s.IsDeleted = true;
+                s.DeletedAt = now;
+            }
+        }
+    }
+}
