@@ -57,6 +57,19 @@ dsb.MapEnum<SiblingRelation>("sibling_relation", EnumMemberNameTranslator.For<Si
 dsb.MapEnum<AttendanceStatus>("attendance_status", EnumMemberNameTranslator.For<AttendanceStatus>());
 dsb.MapEnum<AttendanceMode>("attendance_mode", EnumMemberNameTranslator.For<AttendanceMode>());
 dsb.MapEnum<TeacherAttendanceStatus>("teacher_attendance_status", EnumMemberNameTranslator.For<TeacherAttendanceStatus>());
+dsb.MapEnum<ExamType>("exam_type", EnumMemberNameTranslator.For<ExamType>());
+dsb.MapEnum<ExamStatus>("exam_status", EnumMemberNameTranslator.For<ExamStatus>());
+dsb.MapEnum<ExamResultStatus>("exam_result_status", EnumMemberNameTranslator.For<ExamResultStatus>());
+dsb.MapEnum<GradingScaleType>("grading_scale_type", EnumMemberNameTranslator.For<GradingScaleType>());
+dsb.MapEnum<FeeFrequency>("fee_frequency", EnumMemberNameTranslator.For<FeeFrequency>());
+dsb.MapEnum<InvoiceStatus>("invoice_status", EnumMemberNameTranslator.For<InvoiceStatus>());
+dsb.MapEnum<PaymentMethod>("payment_method", EnumMemberNameTranslator.For<PaymentMethod>());
+dsb.MapEnum<PaymentStatus>("payment_status", EnumMemberNameTranslator.For<PaymentStatus>());
+dsb.MapEnum<TimetableStatus>("timetable_status", EnumMemberNameTranslator.For<TimetableStatus>());
+dsb.MapEnum<VariationType>("variation_type", EnumMemberNameTranslator.For<VariationType>());
+dsb.MapEnum<PayrollStatus>("payroll_status", EnumMemberNameTranslator.For<PayrollStatus>());
+dsb.MapEnum<PayrollRunStatus>("payroll_run_status", EnumMemberNameTranslator.For<PayrollRunStatus>());
+dsb.MapEnum<LeaveStatus>("leave_status", EnumMemberNameTranslator.For<LeaveStatus>());
 var dataSource = dsb.Build();
 
 builder.Services.AddDbContext<AppDbContext>(opt =>
