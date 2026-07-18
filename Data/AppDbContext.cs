@@ -63,6 +63,13 @@ public class AppDbContext : DbContext
     public DbSet<Leave> Leaves => Set<Leave>();
     public DbSet<LeaveType> LeaveTypes => Set<LeaveType>();
     public DbSet<LeaveRecord> LeaveRecords => Set<LeaveRecord>();
+    public DbSet<Poll> Polls => Set<Poll>();
+    public DbSet<PollQuestion> PollQuestions => Set<PollQuestion>();
+    public DbSet<PollOption> PollOptions => Set<PollOption>();
+    public DbSet<PollVote> PollVotes => Set<PollVote>();
+    public DbSet<PollVoteAnswer> PollVoteAnswers => Set<PollVoteAnswer>();
+    public DbSet<RolePrivilege> RolePrivileges => Set<RolePrivilege>();
+    public DbSet<AuditLog> AuditLogs => Set<AuditLog>();
 
     protected override void OnModelCreating(ModelBuilder b)
     {
@@ -120,6 +127,9 @@ public class AppDbContext : DbContext
             ["draft", "generated", "locked", "transfer_queued",
              "transfer_completed", "cancelled"]);
         b.HasPostgresEnum("leave_status", ["pending", "approved", "rejected"]);
+        b.HasPostgresEnum("poll_status", ["draft", "active", "closed"]);
+        b.HasPostgresEnum("poll_category",
+            ["satisfaction", "event", "canteen", "general"]);
 
         // SchoolConfiguration needs ICryptoService, so it cannot be discovered by
         // ApplyConfigurationsFromAssembly (which requires a parameterless ctor).
@@ -153,9 +163,11 @@ public class AppDbContext : DbContext
             // and would hide every school from the superadmin school list.
             if (clr == typeof(School)) continue;
 
-            // User carries a NULLABLE SchoolId (superadmin has none), so it can't
-            // implement ITenantScoped. Filtered explicitly below.
+            // User and AuditLog carry NULLABLE SchoolIds (superadmin has no
+            // school; superadmin actions audit school-less), so neither can
+            // implement ITenantScoped. Both filtered explicitly below.
             if (clr == typeof(User)) continue;
+            if (clr == typeof(AuditLog)) continue;
 
             var tenantScoped = typeof(ITenantScoped).IsAssignableFrom(clr);
             var softDelete = typeof(ISoftDeletable).IsAssignableFrom(clr);
@@ -183,6 +195,12 @@ public class AppDbContext : DbContext
         // superadmins — correct and intended.
         b.Entity<User>().HasQueryFilter(u =>
             !CurrentTenant.IsFilterActive || u.SchoolId == CurrentTenant.SchoolId);
+
+        // AuditLog: same nullable-tenant shape. A school_admin sees only their
+        // school's rows; superadmin (filter inactive) sees everything including
+        // school-less superadmin actions.
+        b.Entity<AuditLog>().HasQueryFilter(a =>
+            !CurrentTenant.IsFilterActive || a.SchoolId == CurrentTenant.SchoolId);
     }
 
     /// <summary>
