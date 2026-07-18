@@ -334,14 +334,17 @@ await using (var boot = new NpgsqlConnection(connString))
     await cmd.ExecuteNonQueryAsync();
 }
 
-// ── Migrate on boot ──────────────────────────────────────────────────────────
-// Applies any pending committed migrations. Railway deploys self-migrate;
-// no-op when up to date. (Requires the Migrations/ folder to be committed —
-// `dotnet ef migrations add Initial` locally, see README.)
+// ── Ensure schema on boot ────────────────────────────────────────────────────
+// No EF Migrations in use — schema is created directly from the current model
+// (AppDbContext + Data/Configurations/*.cs) on first boot. No-op if tables
+// already exist. NOTE: this does NOT apply incremental schema changes to an
+// existing database — if the model changes later, the DB must be dropped and
+// recreated (DROP SCHEMA public CASCADE; CREATE SCHEMA public;) for changes
+// to take effect.
 using (var scope = app.Services.CreateScope())
 {
     var db = scope.ServiceProvider.GetRequiredService<AppDbContext>();
-    await db.Database.MigrateAsync();
+    await db.Database.EnsureCreatedAsync();
 
     // Payroll immutability triggers — applied here instead of inside the
     // migration so a regenerated InitialCreate never silently drops them.
