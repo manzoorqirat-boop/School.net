@@ -1,0 +1,65 @@
+# ── Build output ─────────────────────────────────────────────────────────────
+bin/
+obj/
+[Dd]ebug/
+[Rr]elease/
+artifacts/
+*.binlog
+
+# ── User-specific / IDE ──────────────────────────────────────────────────────
+.vs/
+.vscode/
+*.user
+*.suo
+*.userosscache
+*.sln.docstates
+.idea/
+*.DotSettings.user
+
+# Rider
+*.sln.iml
+
+# ── dotnet tooling ───────────────────────────────────────────────────────────
+project.lock.json
+project.fragment.lock.json
+msbuild.log
+msbuild.err
+msbuild.wrn
+
+# EF Core — keep Migrations/ COMMITTED (they are source), but not the
+# design-time scratch files some tools drop:
+*.dbmdl
+*.edmx.diagram
+
+# ── Secrets & local config ───────────────────────────────────────────────────
+# NEVER commit these. JWT_SECRET, JWT_REFRESH_SECRET, ENCRYPTION_KEY,
+# DATABASE_URL, Seed__SuperAdminPassword all live in env / Railway variables.
+.env
+.env.*
+appsettings.Development.json
+appsettings.Local.json
+appsettings.*.local.json
+secrets.json
+*.pfx
+*.key
+*.pem
+
+# Keep the template committed so the shape of config is documented:
+!appsettings.json
+!appsettings.example.json
+
+# ── Test / coverage ──────────────────────────────────────────────────────────
+TestResults/
+coverage/
+*.coverage
+*.coveragexml
+*.trx
+
+# ── OS noise ─────────────────────────────────────────────────────────────────
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# ── Node (in case frontend ever lands in this repo) ──────────────────────────
+node_modules/
+.next/
