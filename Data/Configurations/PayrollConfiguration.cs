@@ -297,7 +297,9 @@ public sealed class LeaveRecordConfiguration : IEntityTypeConfiguration<LeaveRec
 /// Everything else on a locked/paid row raises P0001 → mapped to 409
 /// DUPLICATE_ERROR by ExceptionHandlingMiddleware.
 ///
-/// Usage in the migration:  migrationBuilder.Sql(PayrollTriggerSql.UpAll);
+/// Executed at boot by Program.cs after MigrateAsync — idempotent
+/// (CREATE OR REPLACE FUNCTION + DROP TRIGGER IF EXISTS), so regenerated
+/// migrations never need hand-editing and the guard can't be forgotten.
 /// </summary>
 public static class PayrollTriggerSql
 {
@@ -313,6 +315,7 @@ BEGIN
   RETURN NEW;
 END $$ LANGUAGE plpgsql;
 
+DROP TRIGGER IF EXISTS trg_payrolls_immutable ON payrolls;
 CREATE TRIGGER trg_payrolls_immutable
   BEFORE UPDATE ON payrolls
   FOR EACH ROW EXECUTE FUNCTION guard_payroll_immutable();
@@ -325,6 +328,7 @@ BEGIN
   RETURN OLD;
 END $$ LANGUAGE plpgsql;
 
+DROP TRIGGER IF EXISTS trg_payrolls_no_delete ON payrolls;
 CREATE TRIGGER trg_payrolls_no_delete
   BEFORE DELETE ON payrolls
   FOR EACH ROW EXECUTE FUNCTION guard_payroll_no_delete();
