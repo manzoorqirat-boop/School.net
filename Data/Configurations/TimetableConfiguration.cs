@@ -59,7 +59,7 @@ public sealed class TimetableConfiguration : IEntityTypeConfiguration<Timetable>
         b.Property(x => x.Status).HasColumnName("status");
 
         b.ToTable(t => t.HasCheckConstraint(
-            "ck_timetables_dates", "\"ToDate\" IS NULL OR \"ToDate\" >= \"FromDate\""));
+            "ck_timetables_dates", "to_date IS NULL OR to_date >= from_date"));
 
         // Mongo's lookup index verbatim — ?date=YYYY-MM-DD resolution scans
         // (class, section, year) then filters the effective window.
@@ -98,7 +98,7 @@ public sealed class TimetableEntryConfiguration : IEntityTypeConfiguration<Timet
         b.Property(x => x.IsActive).HasDefaultValue(true);
 
         b.ToTable(t => t.HasCheckConstraint(
-            "ck_timetable_entries_dow", "\"DayOfWeek\" BETWEEN 0 AND 6"));
+            "ck_timetable_entries_dow", "day_of_week BETWEEN 0 AND 6"));
 
         // Grid render: one query per timetable, ordered by (day, slot).
         b.HasIndex(x => new { x.TimetableId, x.DayOfWeek, x.SlotNumber })
@@ -150,7 +150,7 @@ public sealed class TimetableVariationConfiguration : IEntityTypeConfiguration<T
         // The Date setter keeps DayOfWeek in sync; EF materialisation goes
         // through the same setter, so a stored row re-derives consistently.
         b.ToTable(t => t.HasCheckConstraint(
-            "ck_timetable_variations_dow", "\"DayOfWeek\" BETWEEN 0 AND 6"));
+            "ck_timetable_variations_dow", "day_of_week BETWEEN 0 AND 6"));
 
         // One override per (timetable, date, slot) — all NOT NULL, plain
         // unique ports faithfully.
