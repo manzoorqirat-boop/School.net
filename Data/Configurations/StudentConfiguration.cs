@@ -56,7 +56,7 @@ public sealed class StudentConfiguration : IEntityTypeConfiguration<Student>
         // Looked up UNAUTHENTICATED on the hot path
         // (GET /api/students/public/:token), so it must be indexed.
         b.HasIndex(x => x.ShareToken)
-            .HasFilter("share_token IS NOT NULL")
+            .HasFilter("\"ShareToken\" IS NOT NULL")
             .HasDatabaseName("ix_students_share_token");
 
         // ── Search (GET /api/students?q=) ─────────────────────────────────
@@ -84,7 +84,7 @@ public sealed class StudentConfiguration : IEntityTypeConfiguration<Student>
 
         // Soft-delete: keeps the filtered index small since most rows are live.
         b.HasIndex(x => x.IsDeleted)
-            .HasFilter("is_deleted = true")
+            .HasFilter("\"IsDeleted\" = true")
             .HasDatabaseName("ix_students_deleted");
 
         b.Property(x => x.CreatedAt).HasDefaultValueSql("now()");
@@ -119,8 +119,8 @@ public sealed class StudentPassedExamConfiguration : IEntityTypeConfiguration<St
 
         b.ToTable(t => t.HasCheckConstraint(
             "ck_passed_exams_marks",
-            "(max_marks IS NULL OR max_marks >= 0) AND " +
-            "(obtained_marks IS NULL OR obtained_marks >= 0)"));
+            "(\"MaxMarks\" IS NULL OR \"MaxMarks\" >= 0) AND " +
+            "(\"ObtainedMarks\" IS NULL OR \"ObtainedMarks\" >= 0)"));
 
         b.HasIndex(x => x.StudentId);
     }
