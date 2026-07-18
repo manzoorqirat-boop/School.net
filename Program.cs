@@ -70,6 +70,8 @@ dsb.MapEnum<VariationType>("variation_type", EnumMemberNameTranslator.For<Variat
 dsb.MapEnum<PayrollStatus>("payroll_status", EnumMemberNameTranslator.For<PayrollStatus>());
 dsb.MapEnum<PayrollRunStatus>("payroll_run_status", EnumMemberNameTranslator.For<PayrollRunStatus>());
 dsb.MapEnum<LeaveStatus>("leave_status", EnumMemberNameTranslator.For<LeaveStatus>());
+dsb.MapEnum<PollStatus>("poll_status", EnumMemberNameTranslator.For<PollStatus>());
+dsb.MapEnum<PollCategory>("poll_category", EnumMemberNameTranslator.For<PollCategory>());
 var dataSource = dsb.Build();
 
 builder.Services.AddDbContext<AppDbContext>(opt =>
@@ -149,6 +151,7 @@ builder.Services
 // ─── Authorization ────────────────────────────────────────────────────────────
 builder.Services.AddSingleton<IAuthorizationPolicyProvider, PrivilegePolicyProvider>();
 builder.Services.AddScoped<IAuthorizationHandler, PrivilegeHandler>();
+builder.Services.AddScoped<IPrivilegeResolver, DbPrivilegeResolver>();
 builder.Services.AddAuthorization();
 
 // ─── MVC + JSON ───────────────────────────────────────────────────────────────
