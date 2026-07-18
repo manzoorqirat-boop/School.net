@@ -133,11 +133,29 @@ builder.Services.AddDbContext<AppDbContext>(opt =>
         npg.MigrationsAssembly(typeof(AppDbContext).Assembly.FullName);
     });
 
+    // Columns/keys in snake_case (school_id, amount_paid…). Explicit
+    // ToTable()/HasColumnName() calls still win where present. All raw SQL in
+    // the configurations depends on this — see csproj note.
+    opt.UseSnakeCaseNamingConvention();
+
     if (builder.Environment.IsDevelopment())
     {
         opt.EnableSensitiveDataLogging();
         opt.EnableDetailedErrors();
     }
+
+    // EF warns (10622) that child tables (FeeInvoiceLine, ExamSubject, …) lack
+    // the tenant filter their parents carry. By design: children have no
+    // school_id and are reachable only through their parent, whose filter
+    // applies to any query that touches the navigation.
+    //
+    // THE RULE THIS ENCODES: never query a child DbSet directly without going
+    // through its parent (e.g. db.FeeInvoiceLines.Where(l => l.Invoice…) is
+    // fine — the Invoice filter kicks in; a bare db.FeeInvoiceLines scan is
+    // not, and would cross tenants). Phase 3 handlers must follow it.
+    opt.ConfigureWarnings(w => w.Ignore(
+        Microsoft.EntityFrameworkCore.Diagnostics.CoreEventId
+            .PossibleIncorrectRequiredNavigationWithQueryFilterInteractionWarning));
 });
 
 // ─── Tenancy ──────────────────────────────────────────────────────────────────
@@ -300,12 +318,26 @@ app.UseApiNotFound();
 
 app.MapGet("/health", () => Results.Ok(new { ok = true }));
 
-// Apply pending migrations BEFORE seeding. This is what actually executes
-// `CREATE EXTENSION IF NOT EXISTS citext / pg_trgm` and creates the native
-// enum types declared in AppDbContext.OnModelCreating — without this, those
-// HasPostgresExtension/HasPostgresEnum calls are just model metadata that
-// never touches the real database, and the very first query against a
-// citext column throws NpgsqlDbType 'Citext' isn't present in your database.
+// ── Extensions bootstrap ─────────────────────────────────────────────────────
+// citext/pg_trgm must exist BEFORE the app's pooled connections open: Npgsql
+// loads the type catalog per physical connection, so an extension created
+// mid-flight is invisible to already-open connections ("NpgsqlDbType 'Citext'
+// isn't present"). A separate, throwaway connection creates them first — the
+// data source pool hasn't opened anything yet at this point in boot.
+await using (var boot = new NpgsqlConnection(connString))
+{
+    await boot.OpenAsync();
+    await using var cmd = boot.CreateCommand();
+    cmd.CommandText =
+        "CREATE EXTENSION IF NOT EXISTS citext; " +
+        "CREATE EXTENSION IF NOT EXISTS pg_trgm;";
+    await cmd.ExecuteNonQueryAsync();
+}
+
+// ── Migrate on boot ──────────────────────────────────────────────────────────
+// Applies any pending committed migrations. Railway deploys self-migrate;
+// no-op when up to date. (Requires the Migrations/ folder to be committed —
+// `dotnet ef migrations add Initial` locally, see README.)
 using (var scope = app.Services.CreateScope())
 {
     var db = scope.ServiceProvider.GetRequiredService<AppDbContext>();
