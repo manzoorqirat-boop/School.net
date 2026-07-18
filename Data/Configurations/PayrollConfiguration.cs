@@ -65,10 +65,10 @@ public sealed class SalaryStructureConfiguration : IEntityTypeConfiguration<Sala
         b.Property(x => x.LeaveDeductionPerDay).HasColumnType("numeric(12,2)").HasDefaultValue(0m);
 
         b.ToTable(t => t.HasCheckConstraint("ck_salary_structures_pcts",
-            "base_salary >= 0 AND da BETWEEN 0 AND 200 AND hra BETWEEN 0 AND 200 AND " +
-            "ta >= 0 AND pf BETWEEN 0 AND 100 AND esi BETWEEN 0 AND 100 AND " +
-            "professional_tax >= 0 AND income_tax BETWEEN 0 AND 100 AND " +
-            "leave_deduction_per_day >= 0"));
+            "\"BaseSalary\" >= 0 AND \"Da\" BETWEEN 0 AND 200 AND \"Hra\" BETWEEN 0 AND 200 AND " +
+            "\"Ta\" >= 0 AND \"Pf\" BETWEEN 0 AND 100 AND \"Esi\" BETWEEN 0 AND 100 AND " +
+            "\"ProfessionalTax\" >= 0 AND \"IncomeTax\" BETWEEN 0 AND 100 AND " +
+            "\"LeaveDeductionPerDay\" >= 0"));
 
         Jsonb.MapList(b, x => x.OtherAllowances);
         Jsonb.MapList(b, x => x.OtherDeductions);
@@ -135,10 +135,10 @@ public sealed class PayrollConfiguration : IEntityTypeConfiguration<Payroll>
         b.Property(x => x.UnpaidLeaveDays).HasColumnType("numeric(5,1)");   // half-days
 
         b.ToTable(t => t.HasCheckConstraint("ck_payrolls_nonneg",
-            "base_salary >= 0 AND gross_salary >= 0 AND total_deductions >= 0 AND " +
-            "net_salary >= 0 AND unpaid_leave_days >= 0 AND daily_rate >= 0"));
+            "\"BaseSalary\" >= 0 AND \"GrossSalary\" >= 0 AND \"TotalDeductions\" >= 0 AND " +
+            "\"NetSalary\" >= 0 AND \"UnpaidLeaveDays\" >= 0 AND \"DailyRate\" >= 0"));
         b.ToTable(t => t.HasCheckConstraint("ck_payrolls_period",
-            "month BETWEEN 1 AND 12 AND year BETWEEN 2000 AND 2100"));
+            "\"Month\" BETWEEN 1 AND 12 AND \"Year\" BETWEEN 2000 AND 2100"));
 
         Jsonb.MapList(b, x => x.OtherAllowanceItems);
         Jsonb.MapList(b, x => x.OtherDeductionItems);
@@ -185,7 +185,7 @@ public sealed class PayrollRunConfiguration : IEntityTypeConfiguration<PayrollRu
         b.Property(x => x.TotalNet).HasColumnType("numeric(14,2)");
 
         b.ToTable(t => t.HasCheckConstraint("ck_payroll_runs_period",
-            "month BETWEEN 1 AND 12 AND year BETWEEN 2000 AND 2100"));
+            "\"Month\" BETWEEN 1 AND 12 AND \"Year\" BETWEEN 2000 AND 2100"));
 
         Jsonb.MapList(b, x => x.Skipped);
 
@@ -272,7 +272,7 @@ public sealed class LeaveRecordConfiguration : IEntityTypeConfiguration<LeaveRec
         b.Property(x => x.Days).HasColumnType("numeric(5,1)");
         b.Property(x => x.Status).HasColumnName("status");
 
-        b.ToTable(t => t.HasCheckConstraint("ck_leave_records_dates", "to_date >= from_date"));
+        b.ToTable(t => t.HasCheckConstraint("ck_leave_records_dates", "\"ToDate\" >= \"FromDate\""));
 
         // The latent-bug fix: FK to the type. SET NULL on type deletion —
         // the record survives with its display-name snapshot.
