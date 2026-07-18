@@ -33,7 +33,7 @@ public sealed class SchoolConfiguration : IEntityTypeConfiguration<School>
         b.Property(x => x.AcademicYearStartMonth).HasDefaultValue(4);
         b.ToTable(t => t.HasCheckConstraint(
             "ck_schools_ay_start_month",
-            "\"AcademicYearStartMonth\" BETWEEN 1 AND 12"));
+            "academic_year_start_month BETWEEN 1 AND 12"));
 
         // text[] — never queried individually (SCHEMA-MAP §14.7).
         b.Property(x => x.Classes).HasColumnType("text[]");
@@ -44,14 +44,14 @@ public sealed class SchoolConfiguration : IEntityTypeConfiguration<School>
         // element-level enum constraint, so express it as a CHECK.
         b.ToTable(t => t.HasCheckConstraint(
             "ck_schools_working_days",
-            "\"WorkingDays\" <@ ARRAY['Mon','Tue','Wed','Thu','Fri','Sat','Sun']::text[]"));
+            "working_days <@ ARRAY['Mon','Tue','Wed','Thu','Fri','Sat','Sun']::text[]"));
 
         // 1..28 — capped so the day exists in February (per the Mongo comment).
         b.Property(x => x.FeeBillingDay).HasDefaultValue(1);
         b.Property(x => x.FeeReminderDay).HasDefaultValue(10);
         b.ToTable(t => t.HasCheckConstraint(
             "ck_schools_fee_days",
-            "\"FeeBillingDay\" BETWEEN 1 AND 28 AND \"FeeReminderDay\" BETWEEN 1 AND 28"));
+            "fee_billing_day BETWEEN 1 AND 28 AND fee_reminder_day BETWEEN 1 AND 28"));
 
         b.Property(x => x.LeaveRequireApproval).HasDefaultValue(true);
         b.Property(x => x.IsActive).HasDefaultValue(true);
@@ -92,7 +92,7 @@ public sealed class SchoolLeaveTypeConfiguration : IEntityTypeConfiguration<Scho
         b.Property(x => x.TotalDays).HasColumnType("numeric(5,1)").HasDefaultValue(0m);
         b.Property(x => x.IsPaid).HasDefaultValue(true);
 
-        b.ToTable(t => t.HasCheckConstraint("ck_school_leave_types_days", "\"TotalDays\" >= 0"));
+        b.ToTable(t => t.HasCheckConstraint("ck_school_leave_types_days", "total_days >= 0"));
 
         // Leave.types is seeded from this by name, and leave_records join by name.
         b.HasIndex(x => new { x.SchoolId, x.Name }).IsUnique();
