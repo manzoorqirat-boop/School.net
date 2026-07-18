@@ -74,7 +74,7 @@ public sealed class FeeHeadConfiguration : IEntityTypeConfiguration<FeeHead>
         b.Property(x => x.IsOptional).HasDefaultValue(false);
         b.Property(x => x.Description).HasMaxLength(300);
 
-        b.ToTable(t => t.HasCheckConstraint("ck_fee_heads_amount", "amount >= 0"));
+        b.ToTable(t => t.HasCheckConstraint("ck_fee_heads_amount", "\"Amount\" >= 0"));
         b.HasIndex(x => x.FeeStructureId);
     }
 }
@@ -93,7 +93,7 @@ public sealed class FeeInstallmentConfiguration : IEntityTypeConfiguration<FeeIn
         // A PERCENT of the structure total — numeric(5,2), NOT money.
         b.Property(x => x.Percentage).HasColumnType("numeric(5,2)");
         b.ToTable(t => t.HasCheckConstraint(
-            "ck_fee_installments_pct", "percentage > 0 AND percentage <= 100"));
+            "ck_fee_installments_pct", "\"Percentage\" > 0 AND \"Percentage\" <= 100"));
 
         // The Mongoose hook's case-insensitive name-uniqueness, made structural.
         // (The sum-to-100 rule spans rows and stays in FeeStructure.Validate().)
@@ -136,15 +136,15 @@ public sealed class FeeInvoiceConfiguration : IEntityTypeConfiguration<FeeInvoic
 
         b.ToTable(t => t.HasCheckConstraint(
             "ck_fee_invoices_amounts",
-            "subtotal >= 0 AND discount >= 0 AND late_fee >= 0 AND " +
-            "total >= 0 AND amount_paid >= 0"));
+            "\"Subtotal\" >= 0 AND \"Discount\" >= 0 AND \"LateFee\" >= 0 AND " +
+            "\"Total\" >= 0 AND \"AmountPaid\" >= 0"));
 
         // The 'balance' virtual → STORED GENERATED column. Cannot drift; the
         // frontend reads it (contracts.ts marks it optional so TS would never
         // catch its absence — the UI would just render '—').
         b.Property(x => x.Balance)
             .HasColumnType("numeric(12,2)")
-            .HasComputedColumnSql("GREATEST(0::numeric, total - amount_paid)", stored: true);
+            .HasComputedColumnSql("GREATEST(0::numeric, \"Total\" - \"AmountPaid\")", stored: true);
 
         b.Property(x => x.Status).HasColumnName("status");
 
@@ -185,7 +185,7 @@ public sealed class FeeInvoiceLineConfiguration : IEntityTypeConfiguration<FeeIn
 
         b.Property(x => x.HeadName).IsRequired();
         b.Property(x => x.Amount).HasColumnType("numeric(12,2)");
-        b.ToTable(t => t.HasCheckConstraint("ck_fee_invoice_lines_amount", "amount >= 0"));
+        b.ToTable(t => t.HasCheckConstraint("ck_fee_invoice_lines_amount", "\"Amount\" >= 0"));
 
         // /reports/collection groups by (school, headName) via a join to
         // invoices; the FK index is what keeps that join cheap.
@@ -223,7 +223,7 @@ public sealed class PaymentConfiguration : IEntityTypeConfiguration<Payment>
 
         b.Property(x => x.ReceiptNo).IsRequired();
         b.Property(x => x.Amount).HasColumnType("numeric(12,2)");
-        b.ToTable(t => t.HasCheckConstraint("ck_payments_amount", "amount >= 0"));
+        b.ToTable(t => t.HasCheckConstraint("ck_payments_amount", "\"Amount\" >= 0"));
 
         b.Property(x => x.Method).HasColumnName("method");
         b.Property(x => x.Status).HasColumnName("status");
@@ -257,12 +257,12 @@ public sealed class PaymentConfiguration : IEntityTypeConfiguration<Payment>
         // Razorpay webhook RETRY hit 23505 instead of double-crediting.
         b.HasIndex(x => x.RazorpayPaymentId)
             .IsUnique()
-            .HasFilter("razorpay_payment_id IS NOT NULL")
+            .HasFilter("\"RazorpayPaymentId\" IS NOT NULL")
             .HasDatabaseName("uq_payments_rzp");
 
         b.HasIndex(x => new { x.SchoolId, x.InvoiceId, x.IdempotencyKey })
             .IsUnique()
-            .HasFilter("idempotency_key IS NOT NULL")
+            .HasFilter("\"IdempotencyKey\" IS NOT NULL")
             .HasDatabaseName("uq_payments_idem");
 
         b.Property(x => x.CreatedAt).HasDefaultValueSql("now()");
