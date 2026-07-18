@@ -23,7 +23,7 @@ public sealed class PollConfiguration : IEntityTypeConfiguration<Poll>
         b.Property(x => x.TargetRoles).HasColumnType("text[]");
         b.ToTable(t => t.HasCheckConstraint(
             "ck_polls_target_roles",
-            "target_roles <@ ARRAY['parent','teacher','student'," +
+            "\"TargetRoles\" <@ ARRAY['parent','teacher','student'," +
             "'school_admin','principal','accountant']::text[]"));
 
         b.HasOne(x => x.CreatedByUser)
