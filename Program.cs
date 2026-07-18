@@ -300,6 +300,18 @@ app.UseApiNotFound();
 
 app.MapGet("/health", () => Results.Ok(new { ok = true }));
 
+// Apply pending migrations BEFORE seeding. This is what actually executes
+// `CREATE EXTENSION IF NOT EXISTS citext / pg_trgm` and creates the native
+// enum types declared in AppDbContext.OnModelCreating — without this, those
+// HasPostgresExtension/HasPostgresEnum calls are just model metadata that
+// never touches the real database, and the very first query against a
+// citext column throws NpgsqlDbType 'Citext' isn't present in your database.
+using (var scope = app.Services.CreateScope())
+{
+    var db = scope.ServiceProvider.GetRequiredService<AppDbContext>();
+    await db.Database.MigrateAsync();
+}
+
 // Idempotent — safe on every boot, which is what makes it usable as a Railway
 // release command. Seed__* provisions the superadmin; Rescue__* is break-glass.
 await app.SeedDatabaseAsync();
