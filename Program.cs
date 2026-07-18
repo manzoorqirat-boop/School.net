@@ -30,9 +30,60 @@ CryptoService.AssertKeyAtBoot(builder.Configuration, builder.Environment);
 // multiply memory for no throughput.
 
 // ─── Database ─────────────────────────────────────────────────────────────────
-var connString = builder.Configuration.GetConnectionString("Postgres")
+var rawConn = builder.Configuration.GetConnectionString("Postgres")
     ?? builder.Configuration["DATABASE_URL"]
     ?? throw new InvalidOperationException("No Postgres connection string configured.");
+
+// Railway (and Heroku-style platforms) provide a URI:
+//   postgresql://user:pass@host:5432/railway
+// but NpgsqlDataSourceBuilder accepts only keyword format:
+//   Host=...;Port=...;Username=...;Password=...;Database=...
+// Convert when needed so either shape works. Query params (e.g. sslmode) are
+// passed through. Npgsql's default SslMode=Prefer handles both Railway's
+// internal (no TLS) and public-proxy (TLS) endpoints.
+var connString = ToNpgsqlKeywordFormat(rawConn);
+
+static string ToNpgsqlKeywordFormat(string conn)
+{
+    if (!conn.StartsWith("postgres://", StringComparison.OrdinalIgnoreCase) &&
+        !conn.StartsWith("postgresql://", StringComparison.OrdinalIgnoreCase))
+    {
+        return conn;   // already keyword format
+    }
+
+    var uri = new Uri(conn);
+    var userInfo = uri.UserInfo.Split(':', 2);
+
+    var kv = new List<string>
+    {
+        $"Host={uri.Host}",
+        $"Port={(uri.Port > 0 ? uri.Port : 5432)}",
+        $"Username={Uri.UnescapeDataString(userInfo[0])}",
+        $"Database={uri.AbsolutePath.TrimStart('/')}",
+    };
+
+    if (userInfo.Length > 1)
+        kv.Add($"Password={Uri.UnescapeDataString(userInfo[1])}");
+
+    // Pass through ?sslmode=... and friends.
+    var query = uri.Query.TrimStart('?');
+    if (!string.IsNullOrEmpty(query))
+    {
+        foreach (var pair in query.Split('&', StringSplitOptions.RemoveEmptyEntries))
+        {
+            var parts = pair.Split('=', 2);
+            var key = parts[0].ToLowerInvariant() switch
+            {
+                "sslmode" => "SSL Mode",
+                "connect_timeout" => "Timeout",
+                _ => parts[0],
+            };
+            kv.Add($"{key}={(parts.Length > 1 ? Uri.UnescapeDataString(parts[1]) : "")}");
+        }
+    }
+
+    return string.Join(';', kv);
+}
 
 // Npgsql needs the CLR enum ↔ Postgres label mapping at the DATA SOURCE level.
 //
