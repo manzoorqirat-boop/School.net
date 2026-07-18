@@ -12,6 +12,8 @@ namespace QMSoft.Api.Common;
 /// </summary>
 public sealed class PageInfo
 {
+    public const int DefaultLimit = 50;
+
     [JsonPropertyName("total")]   public int Total { get; init; }
     [JsonPropertyName("page")]    public int Page { get; init; }
     [JsonPropertyName("limit")]   public int Limit { get; init; }
@@ -33,13 +35,13 @@ public sealed class PageInfo
         };
     }
 
-    public static PageInfo Empty(int page = 1, int limit = Paged.DefaultLimit)
+    public static PageInfo Empty(int page = 1, int limit = DefaultLimit)
         => Create(0, page, limit);
 }
 
 public class Paged<T>
 {
-    public const int DefaultLimit = 50;
+    public const int DefaultLimit = PageInfo.DefaultLimit;
 
     [JsonPropertyName("items")]
     public IReadOnlyList<T> Items { get; init; } = [];
