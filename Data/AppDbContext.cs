@@ -42,6 +42,27 @@ public class AppDbContext : DbContext
     public DbSet<TeacherAttendance> TeacherAttendance => Set<TeacherAttendance>();
     public DbSet<ClassTeacher> ClassTeachers => Set<ClassTeacher>();
     public DbSet<Subject> Subjects => Set<Subject>();
+    public DbSet<Exam> Exams => Set<Exam>();
+    public DbSet<ExamSubject> ExamSubjects => Set<ExamSubject>();
+    public DbSet<ExamResult> ExamResults => Set<ExamResult>();
+    public DbSet<GradingScale> GradingScales => Set<GradingScale>();
+    public DbSet<GradeBand> GradeBands => Set<GradeBand>();
+    public DbSet<FeeStructure> FeeStructures => Set<FeeStructure>();
+    public DbSet<FeeHead> FeeHeads => Set<FeeHead>();
+    public DbSet<FeeInstallment> FeeInstallments => Set<FeeInstallment>();
+    public DbSet<FeeInvoice> FeeInvoices => Set<FeeInvoice>();
+    public DbSet<FeeInvoiceLine> FeeInvoiceLines => Set<FeeInvoiceLine>();
+    public DbSet<Payment> Payments => Set<Payment>();
+    public DbSet<TimeSlot> TimeSlots => Set<TimeSlot>();
+    public DbSet<Timetable> Timetables => Set<Timetable>();
+    public DbSet<TimetableEntry> TimetableEntries => Set<TimetableEntry>();
+    public DbSet<TimetableVariation> TimetableVariations => Set<TimetableVariation>();
+    public DbSet<SalaryStructure> SalaryStructures => Set<SalaryStructure>();
+    public DbSet<Payroll> Payrolls => Set<Payroll>();
+    public DbSet<PayrollRun> PayrollRuns => Set<PayrollRun>();
+    public DbSet<Leave> Leaves => Set<Leave>();
+    public DbSet<LeaveType> LeaveTypes => Set<LeaveType>();
+    public DbSet<LeaveRecord> LeaveRecords => Set<LeaveRecord>();
 
     protected override void OnModelCreating(ModelBuilder b)
     {
@@ -76,14 +97,43 @@ public class AppDbContext : DbContext
         b.HasPostgresEnum("teacher_attendance_status",
             ["present", "absent", "half_day", "leave", "unpaid_leave",
              "on_duty", "holiday"]);
+        b.HasPostgresEnum("exam_type",
+            ["unit_test", "periodic", "term", "half_yearly", "annual", "custom"]);
+        b.HasPostgresEnum("exam_status",
+            ["draft", "scheduled", "in_progress", "completed", "published"]);
+        b.HasPostgresEnum("exam_result_status", ["absent", "present", "exempt"]);
+        b.HasPostgresEnum("grading_scale_type", ["marks", "grade", "gpa", "pass_fail"]);
+        b.HasPostgresEnum("fee_frequency",
+            ["one_time", "monthly", "quarterly", "half_yearly", "annual"]);
+        b.HasPostgresEnum("invoice_status",
+            ["pending", "partial", "paid", "overdue", "cancelled"]);
+        b.HasPostgresEnum("payment_method",
+            ["cash", "cheque", "upi", "card", "bank_transfer", "razorpay"]);
+        b.HasPostgresEnum("payment_status",
+            ["pending", "success", "failed", "refunded"]);
+        b.HasPostgresEnum("timetable_status", ["draft", "active", "archived"]);
+        b.HasPostgresEnum("variation_type",
+            ["substitute_teacher", "cancelled", "rescheduled", "guest_lecture", "custom"]);
+        b.HasPostgresEnum("payroll_status",
+            ["draft", "generated", "locked", "paid", "failed"]);
+        b.HasPostgresEnum("payroll_run_status",
+            ["draft", "generated", "locked", "transfer_queued",
+             "transfer_completed", "cancelled"]);
+        b.HasPostgresEnum("leave_status", ["pending", "approved", "rejected"]);
 
         // SchoolConfiguration needs ICryptoService, so it cannot be discovered by
         // ApplyConfigurationsFromAssembly (which requires a parameterless ctor).
         // Applied explicitly; the rest are scanned.
         b.ApplyConfiguration(new SchoolConfiguration(_crypto));
+        b.ApplyConfiguration(new PaymentConfiguration(_crypto));
+        b.ApplyConfiguration(new SalaryStructureConfiguration(_crypto));
+        b.ApplyConfiguration(new PayrollConfiguration(_crypto));
         b.ApplyConfigurationsFromAssembly(
             Assembly.GetExecutingAssembly(),
-            t => t != typeof(SchoolConfiguration));
+            t => t != typeof(SchoolConfiguration)
+              && t != typeof(PaymentConfiguration)
+              && t != typeof(SalaryStructureConfiguration)
+              && t != typeof(PayrollConfiguration));
 
         ApplyGlobalFilters(b);
     }
