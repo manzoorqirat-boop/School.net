@@ -46,8 +46,6 @@ public sealed class TenantContext : ITenantContext
 
     public bool IsSuperAdmin => string.Equals(Role, "superadmin", StringComparison.Ordinal);
 
-    private readonly bool _authenticated;
-
     /// <summary>
     /// Filter is bypassed ONLY for superadmin.
     ///
@@ -67,7 +65,6 @@ public sealed class TenantContext : ITenantContext
     {
         var user = accessor.HttpContext?.User;
         if (user?.Identity?.IsAuthenticated != true) return;
-        _authenticated = true;
 
         Role = user.FindFirst(RoleClaim)?.Value
                ?? user.FindFirst("role")?.Value;
