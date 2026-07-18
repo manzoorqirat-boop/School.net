@@ -9,6 +9,9 @@ on:
         required: true
         default: 'InitialCreate'
 
+permissions:
+  contents: write
+
 jobs:
   add-migration:
     runs-on: ubuntu-latest
