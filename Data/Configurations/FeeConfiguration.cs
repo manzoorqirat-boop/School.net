@@ -150,8 +150,10 @@ public sealed class FeeInvoiceConfiguration : IEntityTypeConfiguration<FeeInvoic
 
         // 'overdue' exists in the DB enum for wire parity but must NEVER be
         // stored — it's derived (EffectiveStatus). Structural, not conventional.
+        // Status is persisted as its underlying int (InvoiceStatus.Overdue = 3),
+        // not as text, so the constraint must compare against the numeric value.
         b.ToTable(t => t.HasCheckConstraint(
-            "ck_fee_invoices_no_stored_overdue", "status <> 'overdue'"));
+            "ck_fee_invoices_no_stored_overdue", "status <> 3"));
 
         b.HasIndex(x => new { x.SchoolId, x.InvoiceNo })
             .IsUnique()
