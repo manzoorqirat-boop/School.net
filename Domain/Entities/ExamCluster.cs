@@ -205,27 +205,23 @@ public class GradingScale : TenantEntity
     public bool IsActive { get; set; } = true;
 
     /// <summary>
-    /// Verbatim port of gradingScaleSchema.methods.gradeFor — the grading
-    /// business logic for the whole exam module.
+    /// Grading logic — Node's gradeFor with the GAP BUG FIXED (product-owner
+    /// approved; no production data means no historical report card to
+    /// contradict).
     ///
-    /// Band match is INCLUSIVE both ends (percent >= min && <= max), first
-    /// match wins, and a percentage falling in a gap between bands yields
-    /// grade '—' with isPassing=false.
+    /// Node matched percent &gt;= min &amp;&amp; &lt;= max with INTEGER bands, so one-decimal
+    /// percentages fell into the cracks: 109/120 = 90.8% → no band → grade '—',
+    /// isPassing FALSE — a passing student marked failing.
     ///
-    /// ⚠️ LATENT BUG — PRESERVED DELIBERATELY, DECIDE BEFORE LAUNCH:
-    /// percentages carry ONE DECIMAL, but schools define INTEGER bands
-    /// (81–90, 91–100). Anything in between falls in the gap:
+    /// Fix: HALF-OPEN matching over bands sorted by MinPercent — a percent
+    /// belongs to the highest band whose MinPercent it reaches. MaxPercent
+    /// becomes display-only.
     ///
-    ///     109/120 = 90.8% → no band → grade '—', isPassing = FALSE
-    ///
-    /// Verified against the verbatim Node code — a passing student is marked
-    /// as failing on their report card whenever maxMarks doesn't divide 100.
-    /// The Node app has this bug today; this port reproduces it exactly
-    /// because changing grading output changes report cards.
-    ///
-    /// The fix, if wanted, is half-open matching (percent >= min &&
-    /// percent < next band's min, top band capped at 100) — one line here,
-    /// zero schema change. It belongs to the product owner, not the port.
+    /// Safety property (verified by simulation): every percentage the OLD rule
+    /// graded gets the SAME grade under the new rule — only the '—' gap results
+    /// change, and only to the grade of the band directly below the gap
+    /// (90.8 → A2, 32.9 → E). Below the lowest MinPercent still yields '—'
+    /// (a school defining no fail band keeps that behaviour).
     /// </summary>
     public GradeResult GradeFor(decimal percent)
     {
@@ -235,8 +231,10 @@ public class GradingScale : TenantEntity
             return new GradeResult(pass ? "PASS" : "FAIL", null, pass, null);
         }
 
-        var band = Bands.FirstOrDefault(b =>
-            percent >= b.MinPercent && percent <= b.MaxPercent);
+        var band = Bands
+            .Where(b => percent >= b.MinPercent)
+            .OrderByDescending(b => b.MinPercent)
+            .FirstOrDefault();
 
         if (band is null) return new GradeResult("—", null, false, null);
 
