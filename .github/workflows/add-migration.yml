@@ -1,0 +1,48 @@
+name: Add EF Core Migration
+
+# Run manually from the GitHub Actions tab — no terminal needed.
+on:
+  workflow_dispatch:
+    inputs:
+      migration_name:
+        description: 'Migration name (e.g. InitialCreate)'
+        required: true
+        default: 'InitialCreate'
+
+jobs:
+  add-migration:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repo
+        uses: actions/checkout@v4
+
+      - name: Setup .NET
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: '8.0.x'   # change to match your project's target framework
+
+      - name: Install dotnet-ef tool
+        run: dotnet tool install --global dotnet-ef
+
+      - name: Add PATH for global tools
+        run: echo "$HOME/.dotnet/tools" >> $GITHUB_PATH
+
+      - name: Restore
+        run: dotnet restore
+
+      - name: Add migration
+        run: |
+          dotnet ef migrations add ${{ github.event.inputs.migration_name }} \
+            --project . \
+            --output-dir Migrations
+        # If AppDbContext needs a design-time connection string / DesignTimeDbContextFactory,
+        # this repo already has Data/DesignTimeDbContextFactory.cs, so this should work
+        # without needing a live DATABASE_URL at all.
+
+      - name: Commit and push generated migration files
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add Migrations/
+          git diff --cached --quiet && echo "No changes to commit" || git commit -m "Add EF Core migration: ${{ github.event.inputs.migration_name }}"
+          git push
