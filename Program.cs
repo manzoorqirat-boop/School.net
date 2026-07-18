@@ -342,6 +342,12 @@ using (var scope = app.Services.CreateScope())
 {
     var db = scope.ServiceProvider.GetRequiredService<AppDbContext>();
     await db.Database.MigrateAsync();
+
+    // Payroll immutability triggers — applied here instead of inside the
+    // migration so a regenerated InitialCreate never silently drops them.
+    // Idempotent: CREATE OR REPLACE FUNCTION + DROP TRIGGER IF EXISTS.
+    await db.Database.ExecuteSqlRawAsync(
+        QMSoft.Api.Data.Configurations.PayrollTriggerSql.UpAll);
 }
 
 // Idempotent — safe on every boot, which is what makes it usable as a Railway
