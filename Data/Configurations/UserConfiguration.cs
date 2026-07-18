@@ -41,7 +41,7 @@ public sealed class UserConfiguration : IEntityTypeConfiguration<User>
 
         b.HasIndex(x => x.Username)
             .IsUnique()
-            .HasFilter("\"SchoolId\" IS NULL")
+            .HasFilter("school_id IS NULL")
             .HasDatabaseName("uq_users_global_username");
 
         b.HasOne(x => x.Student)
