@@ -192,13 +192,13 @@ public sealed class SchoolsController : ControllerBase
 
         // School + its first admin in one transaction — a school with no admin
         // is unusable, so they must both commit or neither.
-        await using var tx = await _db.Database.BeginTransactionAsync(ct);
-        try
+        User admin = null!;
+        await Tx.RunAsync(_db, async () =>
         {
             _db.Schools.Add(school);
             await _db.SaveChangesAsync(ct);          // need school.Id for the FK
 
-            var admin = new User
+            admin = new User
             {
                 SchoolId = school.Id, SchoolSlug = school.Slug,
                 Username = req.AdminUsername.ToLowerInvariant(),
@@ -208,12 +208,10 @@ public sealed class SchoolsController : ControllerBase
             };
             _db.Users.Add(admin);
             await _db.SaveChangesAsync(ct);
-            await tx.CommitAsync(ct);
+        }, ct);   // 23505 dup slug/username → 409 via middleware
 
-            await _audit.WriteAsync("school.create", "school", school.Id.ToString(), ct: ct);
-            return StatusCode(201, new { school, admin });
-        }
-        catch { await tx.RollbackAsync(ct); throw; }   // 23505 dup slug/username → 409
+        await _audit.WriteAsync("school.create", "school", school.Id.ToString(), ct: ct);
+        return StatusCode(201, new { school, admin });
     }
 
     [HttpPut("{id:guid}")]
