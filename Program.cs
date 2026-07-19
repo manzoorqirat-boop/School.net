@@ -9,6 +9,7 @@ using Microsoft.EntityFrameworkCore;
 using Microsoft.IdentityModel.Tokens;
 using Npgsql;
 using Hangfire;
+using Hangfire.PostgreSql;
 using QMSoft.Api.Domain.Entities;
 using QMSoft.Api.Authorization;
 using QMSoft.Api.Data;
