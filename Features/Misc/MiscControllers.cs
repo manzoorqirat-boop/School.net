@@ -29,7 +29,8 @@ public sealed class PollsController : ControllerBase
         var q = _db.Polls.AsNoTracking().Include(p => p.Questions).ThenInclude(x => x.Options).AsQueryable();
         if (role is not ("school_admin" or "principal" or "superadmin"))
             q = q.Where(p => p.TargetRoles.Contains(role) && p.Status == PollStatus.Active);
-        return Ok(new { items = await q.OrderByDescending(p => p.CreatedAt).ToListAsync(ct) });
+        // Bare array — the page does (data || []).map(...).
+        return Ok(await q.OrderByDescending(p => p.CreatedAt).ToListAsync(ct));
     }
 
     [HttpGet("{id:guid}")]
@@ -166,6 +167,31 @@ public sealed class PrivilegesController : ControllerBase
         return Ok(new { privilege, roles = defaults, isCustomized = false });
     }
 
+    [HttpPost("role/{role}/reset")]
+    [RequirePrivilege("user:manage")]
+    public async Task<IActionResult> ResetRole(string role, CancellationToken ct)
+    {
+        var valid = new[] { "superadmin","school_admin","principal","accountant","teacher","parent","student" };
+        if (!valid.Contains(role)) return BadRequest(new { error = $"Invalid role: {role}" });
+
+        var sid = _tenant.SchoolId ?? Guid.Empty;
+        // Remove this role from every customized override so all privileges fall
+        // back to defaults for that role. Count privileges touched.
+        var overrides = await _db.RolePrivileges.Where(r => r.SchoolId == sid).ToListAsync(ct);
+        int touched = 0;
+        foreach (var o in overrides)
+        {
+            var defaults = PrivilegeDefaults.Map.GetValueOrDefault(o.Privilege) ?? Array.Empty<string>();
+            var wantsRole = defaults.Contains(role);
+            var hasRole = o.Roles.Contains(role);
+            if (wantsRole && !hasRole) { o.Roles = o.Roles.Append(role).ToList(); touched++; }
+            else if (!wantsRole && hasRole) { o.Roles = o.Roles.Where(x => x != role).ToList(); touched++; }
+        }
+        if (touched > 0) await _db.SaveChangesAsync(ct);
+        await _audit.WriteAsync("privilege.reset_role", "role_privilege", role, ct: ct);
+        return Ok(new { privilegesTouched = touched });
+    }
+
     [HttpPost("reset-all")]
     [RequirePrivilege("user:manage")]
     public async Task<IActionResult> ResetAll(CancellationToken ct)
@@ -190,23 +216,43 @@ public sealed class AuditLogsController : ControllerBase
     [HttpGet]
     [RequirePrivilege("audit:view")]
     public async Task<IActionResult> List([FromQuery] string? action, [FromQuery] string? entity,
-        [FromQuery] DateOnly? from, [FromQuery] DateOnly? to, [FromQuery] int? page, [FromQuery] int? limit, CancellationToken ct)
+        [FromQuery] DateOnly? from, [FromQuery] DateOnly? to, [FromQuery] int? limit, [FromQuery] int? skip, CancellationToken ct)
     {
         var q = _db.AuditLogs.AsNoTracking().AsQueryable();
         if (!string.IsNullOrEmpty(action)) q = q.Where(a => a.Action == action);
         if (!string.IsNullOrEmpty(entity)) q = q.Where(a => a.Entity == entity);
         if (from is { } f) q = q.Where(a => a.CreatedAt >= f.ToDateTime(TimeOnly.MinValue));
         if (to is { } t) q = q.Where(a => a.CreatedAt <= t.ToDateTime(TimeOnly.MaxValue));
-        var p = Math.Max(1, page ?? 1); var l = Math.Clamp(limit ?? PageInfo.DefaultLimit, 1, 100);
+
+        var l = Math.Clamp(limit ?? 100, 1, 500);
+        var sk = Math.Max(0, skip ?? 0);
         var total = await q.CountAsync(ct);
-        var items = await q.OrderByDescending(a => a.CreatedAt).Skip((p - 1) * l).Take(l).ToListAsync(ct);
-        return Ok(new Paged<AuditLog> { Items = items, Pagination = PageInfo.Create(total, p, l) });
+        // { logs, total, limit, skip } — verbatim Node shape (page reads r.logs/r.total).
+        var logs = await q.OrderByDescending(a => a.CreatedAt).Skip(sk).Take(l).ToListAsync(ct);
+        return Ok(new { logs, total, limit = l, skip = sk });
     }
 
     [HttpGet("actions")]
     [RequirePrivilege("audit:view")]
     public async Task<IActionResult> Actions(CancellationToken ct) =>
-        Ok(new { actions = await _db.AuditLogs.AsNoTracking().Select(a => a.Action).Distinct().OrderBy(a => a).ToListAsync(ct) });
+        // Bare string[] — page types it as string[].
+        Ok(await _db.AuditLogs.AsNoTracking().Select(a => a.Action).Distinct().OrderBy(a => a).ToListAsync(ct));
+
+    [HttpGet("stats")]
+    [RequirePrivilege("audit:view")]
+    public async Task<IActionResult> Stats(CancellationToken ct)
+    {
+        var total = await _db.AuditLogs.AsNoTracking().CountAsync(ct);
+        var byAction = await _db.AuditLogs.AsNoTracking()
+            .GroupBy(a => a.Action)
+            .Select(g => new { _id = g.Key, count = g.Count() })
+            .OrderByDescending(x => x.count).Take(20).ToListAsync(ct);
+        var byUser = await _db.AuditLogs.AsNoTracking()
+            .GroupBy(a => a.Username)
+            .Select(g => new { _id = new { username = g.Key }, count = g.Count() })
+            .OrderByDescending(x => x.count).Take(20).ToListAsync(ct);
+        return Ok(new { total, byAction, byUser });
+    }
 }
 
 // ── Class teachers ────────────────────────────────────────────────────────
