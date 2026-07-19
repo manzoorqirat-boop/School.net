@@ -122,16 +122,13 @@ public sealed class InvoicesController : ControllerBase
             CollectedByUserId = _tenant.UserId, PaidAt = DateTime.UtcNow,
         };
 
-        await using var tx = await _db.Database.BeginTransactionAsync(ct);
-        try
+        await Tx.RunAsync(_db, async () =>
         {
             _db.Payments.Add(payment);
             inv.AmountPaid += req.Amount;               // denormalised sum
             inv.RecomputeStoredStatus();                // pending→partial→paid
             await _db.SaveChangesAsync(ct);
-            await tx.CommitAsync(ct);
-        }
-        catch { await tx.RollbackAsync(ct); throw; }    // 23505 on idem/receipt → 409 envelope
+        }, ct);    // 23505 on idem/receipt → 409 envelope
 
         await _audit.WriteAsync("invoice.pay_offline", "payment", payment.Id.ToString(),
             metaJson: System.Text.Json.JsonSerializer.Serialize(new { invoiceId = id, amount = req.Amount, method = req.Method }), ct: ct);
