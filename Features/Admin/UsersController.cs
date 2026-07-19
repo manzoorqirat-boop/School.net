@@ -136,14 +136,23 @@ public sealed class SchoolsController : ControllerBase
     public SchoolsController(AppDbContext db, ITenantContext tenant, IAuditWriter audit)
     { _db = db; _tenant = tenant; _audit = audit; }
 
-    // Own school (any authenticated user in a tenant).
+    // GET /api/schools — bare ARRAY (frontend does setSchools(data).map(...)):
+    // superadmin → all schools; any other user → [their school] or [].
     [HttpGet]
     [Microsoft.AspNetCore.Authorization.Authorize]
-    public async Task<IActionResult> Current(CancellationToken ct)
+    public async Task<IActionResult> List(CancellationToken ct)
     {
-        if (_tenant.SchoolId is not { } sid) return Ok(new { school = (object?)null });
-        var s = await _db.Schools.AsNoTracking().IgnoreQueryFilters().FirstOrDefaultAsync(x => x.Id == sid, ct);
-        return Ok(new { school = s });
+        if (_tenant.IsSuperAdmin)
+        {
+            var all = await _db.Schools.AsNoTracking().IgnoreQueryFilters()
+                .OrderByDescending(s => s.CreatedAt).ToListAsync(ct);
+            return Ok(all);
+        }
+
+        if (_tenant.SchoolId is not { } sid) return Ok(Array.Empty<School>());
+        var mine = await _db.Schools.AsNoTracking().IgnoreQueryFilters()
+            .FirstOrDefaultAsync(x => x.Id == sid, ct);
+        return Ok(mine is null ? Array.Empty<School>() : new[] { mine });
     }
 
     [HttpGet("{id:guid}")]
@@ -156,15 +165,55 @@ public sealed class SchoolsController : ControllerBase
         return s is null ? NotFound(new { error = "Not found" }) : Ok(s);
     }
 
+    public sealed record CreateSchoolRequest(
+        string? Name, string? Slug, string? Type, string? Email, string? Phone,
+        string? AdminUsername, string? AdminPassword, string? AdminName,
+        List<string>? Classes, List<string>? Sections, List<string>? WorkingDays);
+
     [HttpPost]
     [RequirePrivilege("school:manage")]
-    public async Task<IActionResult> Create([FromBody] School body, CancellationToken ct)
+    public async Task<IActionResult> Create([FromBody] CreateSchoolRequest req, CancellationToken ct)
     {
-        body.Slug = body.Slug.ToLowerInvariant();
-        _db.Schools.Add(body);
-        await _db.SaveChangesAsync(ct);
-        await _audit.WriteAsync("school.create", "school", body.Id.ToString(), ct: ct);
-        return StatusCode(201, body);
+        if (string.IsNullOrWhiteSpace(req.Name) || string.IsNullOrWhiteSpace(req.Slug))
+            return BadRequest(new { error = "name and slug required" });
+        if (string.IsNullOrWhiteSpace(req.AdminUsername) || string.IsNullOrWhiteSpace(req.AdminPassword))
+            return BadRequest(new { error = "adminUsername and adminPassword required" });
+
+        Enum.TryParse<SchoolType>(req.Type ?? "k12", true, out var schoolType);
+
+        var school = new School
+        {
+            Name = req.Name, Slug = req.Slug.ToLowerInvariant(), Type = schoolType,
+            Email = req.Email, Phone = req.Phone,
+            Classes = req.Classes ?? new() { "Nursery","LKG","UKG","1","2","3","4","5","6","7","8","9","10","11","12" },
+            Sections = req.Sections ?? new() { "A", "B", "C" },
+            WorkingDays = req.WorkingDays ?? new() { "Mon","Tue","Wed","Thu","Fri","Sat" },
+        };
+
+        // School + its first admin in one transaction — a school with no admin
+        // is unusable, so they must both commit or neither.
+        await using var tx = await _db.Database.BeginTransactionAsync(ct);
+        try
+        {
+            _db.Schools.Add(school);
+            await _db.SaveChangesAsync(ct);          // need school.Id for the FK
+
+            var admin = new User
+            {
+                SchoolId = school.Id, SchoolSlug = school.Slug,
+                Username = req.AdminUsername.ToLowerInvariant(),
+                Password = BCrypt.Net.BCrypt.HashPassword(req.AdminPassword, workFactor: 10),
+                Name = string.IsNullOrWhiteSpace(req.AdminName) ? req.AdminUsername : req.AdminName,
+                Role = UserRole.SchoolAdmin, IsActive = true,
+            };
+            _db.Users.Add(admin);
+            await _db.SaveChangesAsync(ct);
+            await tx.CommitAsync(ct);
+
+            await _audit.WriteAsync("school.create", "school", school.Id.ToString(), ct: ct);
+            return StatusCode(201, new { school, admin });
+        }
+        catch { await tx.RollbackAsync(ct); throw; }   // 23505 dup slug/username → 409
     }
 
     [HttpPut("{id:guid}")]
