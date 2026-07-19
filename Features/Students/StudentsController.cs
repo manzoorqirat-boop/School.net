@@ -399,7 +399,7 @@ public sealed class StudentsController : ControllerBase
 
                 var n = await q.ExecuteUpdateAsync(u => u
                     .SetProperty(s => s.Class, p.ToClass)
-                    .SetProperty(s => s.Section, toSection ?? s.Section)
+                    .SetProperty(s => s.Section, s => toSection ?? s.Section)
                     .SetProperty(s => s.AcademicYear, req.ToAcademicYear), ct);
 
                 results.Add(new { p.FromClass, p.FromSection, p.ToClass, toSection, modifiedCount = n });
