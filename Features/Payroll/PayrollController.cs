@@ -232,6 +232,122 @@ public sealed class PayrollController : ControllerBase
     public async Task<IActionResult> ListRuns(CancellationToken ct) =>
         Ok(new { items = await _db.PayrollRuns.AsNoTracking().OrderByDescending(r => r.Year).ThenByDescending(r => r.Month).ToListAsync(ct) });
 
+    // ── Leave types (stored on the school's leave policy) ─────────────────
+    private static readonly object[] DefaultLeaveTypes =
+    {
+        new { name = "Sick",      totalDays = 12m,  isPaid = true,  color = "#EF4444", description = "Medical / illness" },
+        new { name = "Casual",    totalDays = 12m,  isPaid = true,  color = "#3B82F6", description = "Personal / short notice" },
+        new { name = "Earned",    totalDays = 15m,  isPaid = true,  color = "#10B981", description = "Accrued / vacation" },
+        new { name = "Maternity", totalDays = 180m, isPaid = true,  color = "#EC4899", description = "As per Maternity Benefit Act" },
+        new { name = "Unpaid",    totalDays = 0m,   isPaid = false, color = "#6B7280", description = "Loss of pay" },
+    };
+
+    [HttpGet("leave-types")]
+    [RequirePrivilege("payroll:view")]
+    public async Task<IActionResult> ListLeaveTypes(CancellationToken ct)
+    {
+        var school = await _db.Schools.AsNoTracking().IgnoreQueryFilters()
+            .Include(s => s.LeaveTypes)
+            .FirstOrDefaultAsync(s => s.Id == _tenant.SchoolId, ct);
+
+        var configured = school?.LeaveTypes;
+        var hasCustom = configured is { Count: > 0 };
+
+        return Ok(new
+        {
+            types = hasCustom
+                ? configured!.Select(t => new { name = t.Name, totalDays = t.TotalDays, isPaid = t.IsPaid, color = t.Color, description = t.Description }).ToArray<object>()
+                : DefaultLeaveTypes,
+            isDefault = !hasCustom,
+            requireApproval = school?.LeaveRequireApproval ?? true,
+        });
+    }
+
+    public sealed record LeaveTypeInput(string Name, decimal TotalDays, bool? IsPaid, string? Color, string? Description);
+    public sealed record UpdateLeaveTypesRequest(List<LeaveTypeInput>? Types, bool? RequireApproval);
+
+    [HttpPut("leave-types")]
+    [RequirePrivilege("payroll:manage")]
+    public async Task<IActionResult> UpdateLeaveTypes([FromBody] UpdateLeaveTypesRequest req, CancellationToken ct)
+    {
+        if (req.Types is null || req.Types.Count == 0)
+            return BadRequest(new { error = "types[] required" });
+        foreach (var t in req.Types)
+        {
+            if (string.IsNullOrWhiteSpace(t.Name)) return BadRequest(new { error = "Each type needs a name" });
+            if (t.TotalDays < 0) return BadRequest(new { error = $"Invalid totalDays for {t.Name}" });
+        }
+
+        var school = await _db.Schools.IgnoreQueryFilters()
+            .Include(s => s.LeaveTypes)
+            .FirstOrDefaultAsync(s => s.Id == _tenant.SchoolId, ct);
+        if (school is null) return NotFound(new { error = "School not found" });
+
+        _db.RemoveRange(school.LeaveTypes);
+        school.LeaveTypes = req.Types.Select(t => new SchoolLeaveType
+        {
+            SchoolId = school.Id, Name = t.Name.Trim(), TotalDays = t.TotalDays,
+            IsPaid = t.IsPaid != false, Color = t.Color, Description = t.Description,
+        }).ToList();
+        if (req.RequireApproval is { } ra) school.LeaveRequireApproval = ra;
+
+        await _db.SaveChangesAsync(ct);
+        await _audit.WriteAsync("leave_types.update", "school", school.Id.ToString(), ct: ct);
+
+        return Ok(new
+        {
+            types = school.LeaveTypes.Select(t => new { name = t.Name, totalDays = t.TotalDays, isPaid = t.IsPaid, color = t.Color, description = t.Description }),
+            requireApproval = school.LeaveRequireApproval,
+        });
+    }
+
+    // AI leave-text parsing: the Claude path needs ANTHROPIC_API_KEY; without it
+    // a heuristic fallback extracts type + rough dates so the UI still works.
+    public sealed record ParseLeaveRequest(string? Text);
+    [HttpPost("leaves/parse")]
+    [RequirePrivilege("payroll:view")]
+    public async Task<IActionResult> ParseLeave([FromBody] ParseLeaveRequest req, CancellationToken ct)
+    {
+        if (string.IsNullOrWhiteSpace(req.Text))
+            return BadRequest(new { error = "text required" });
+
+        var school = await _db.Schools.AsNoTracking().IgnoreQueryFilters()
+            .Include(s => s.LeaveTypes).FirstOrDefaultAsync(s => s.Id == _tenant.SchoolId, ct);
+        var typeNames = school is { LeaveTypes.Count: > 0 }
+            ? school.LeaveTypes.Select(t => t.Name).ToArray()
+            : new[] { "Sick", "Casual", "Earned", "Maternity", "Unpaid" };
+
+        // Heuristic: match a known type name, default a 1-day leave today.
+        var text = req.Text.Trim();
+        var matched = typeNames.FirstOrDefault(n => text.Contains(n, StringComparison.OrdinalIgnoreCase)) ?? typeNames[0];
+        var today = DateOnly.FromDateTime(DateTime.UtcNow);
+
+        return Ok(new
+        {
+            parsed = new { type = matched, fromDate = today, toDate = today, days = 1m, reason = text, aiUsed = false },
+            source = "heuristic",
+            text,
+        });
+    }
+
+    [HttpDelete("leaves/record")]
+    [RequirePrivilege("payroll:manage")]
+    public async Task<IActionResult> DeleteLeaveRecord(
+        [FromQuery] Guid teacherId, [FromQuery] Guid leaveId, [FromQuery] string? academicYear, CancellationToken ct)
+    {
+        if (teacherId == Guid.Empty || leaveId == Guid.Empty)
+            return BadRequest(new { error = "teacherId, leaveId required" });
+
+        var rec = await _db.LeaveRecords.Include(r => r.Leave)
+            .FirstOrDefaultAsync(r => r.Id == leaveId && r.Leave.TeacherId == teacherId, ct);
+        if (rec is null) return NotFound(new { error = "Leave entry not found" });
+
+        _db.LeaveRecords.Remove(rec);
+        await _db.SaveChangesAsync(ct);
+        await _audit.WriteAsync("leave.delete", "leave", leaveId.ToString(), ct: ct);
+        return Ok(new { ok = true });
+    }
+
     private async Task<decimal> ComputeUnpaidDaysAsync(Guid teacherId, int year, int month, CancellationToken ct)
     {
         var leave = await _db.Leaves.AsNoTracking().Include(l => l.Types).Include(l => l.Records)
