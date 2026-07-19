@@ -10,6 +10,12 @@ public interface ITenantContext
     Guid? UserId { get; }
     string? Role { get; }
 
+    /// <summary>
+    /// Set only when Role == "student" — the student row this login is linked to.
+    /// Read from the "studentId" JWT claim (see TokenService.Generate).
+    /// </summary>
+    Guid? StudentId { get; }
+
     /// <summary>True when the query filter should be bypassed entirely.</summary>
     bool IsSuperAdmin { get; }
 
@@ -36,13 +42,15 @@ public interface ITenantContext
 /// </summary>
 public sealed class TenantContext : ITenantContext
 {
-    public const string SchoolIdClaim = "schoolId";
-    public const string RoleClaim     = ClaimTypes.Role;
-    public const string UserIdClaim   = ClaimTypes.NameIdentifier;
+    public const string SchoolIdClaim  = "schoolId";
+    public const string RoleClaim      = ClaimTypes.Role;
+    public const string UserIdClaim    = ClaimTypes.NameIdentifier;
+    public const string StudentIdClaim = "studentId";
 
     public Guid? SchoolId { get; }
     public Guid? UserId { get; }
     public string? Role { get; }
+    public Guid? StudentId { get; }
 
     public bool IsSuperAdmin => string.Equals(Role, "superadmin", StringComparison.Ordinal);
 
@@ -75,6 +83,10 @@ public sealed class TenantContext : ITenantContext
         var sid = user.FindFirst(SchoolIdClaim)?.Value;
         if (!string.IsNullOrEmpty(sid) && Guid.TryParse(sid, out var schoolId))
             SchoolId = schoolId;
+
+        var stuId = user.FindFirst(StudentIdClaim)?.Value;
+        if (!string.IsNullOrEmpty(stuId) && Guid.TryParse(stuId, out var studentId))
+            StudentId = studentId;
     }
 
     public Guid RequireSchoolId() =>
@@ -91,6 +103,9 @@ public sealed class FixedTenantContext : ITenantContext
     public Guid? SchoolId { get; }
     public Guid? UserId => null;
     public string? Role { get; }
+
+    /// <summary>Always null — background jobs and the seeder never run as a student.</summary>
+    public Guid? StudentId => null;
 
     public bool IsSuperAdmin => Role == "superadmin";
     public bool IsFilterActive => SchoolId.HasValue && !IsSuperAdmin;
