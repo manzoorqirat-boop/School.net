@@ -130,9 +130,12 @@ public sealed class RazorpayService : IRazorpayService
     {
         var (_, keySecret) = GetCredentials(school);
 
-        var expected = Convert.ToHexStringLower(HMACSHA256.HashData(
+        // Convert.ToHexStringLower is .NET 9+ only; this project targets net8.0.
+        // ToHexString(...).ToLowerInvariant() produces the identical lowercase
+        // hex output.
+        var expected = Convert.ToHexString(HMACSHA256.HashData(
             Encoding.UTF8.GetBytes(keySecret),
-            Encoding.UTF8.GetBytes($"{orderId}|{paymentId}")));
+            Encoding.UTF8.GetBytes($"{orderId}|{paymentId}"))).ToLowerInvariant();
 
         var expectedBytes = Encoding.UTF8.GetBytes(expected);
         var actualBytes = Encoding.UTF8.GetBytes(signature.Trim().ToLowerInvariant());
