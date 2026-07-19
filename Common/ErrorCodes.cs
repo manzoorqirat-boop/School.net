@@ -51,6 +51,11 @@ public static class ErrorCodes
     // ── Authorization ─────────────────────────────────────────────────────
     public const string Forbidden = "FORBIDDEN"; // 403
 
+    // ── Razorpay (services/razorpay.js) ─────────────────────────────────────
+    public const string RazorpayNotConfigured = "RAZORPAY_NOT_CONFIGURED"; // 400
+    public const string RazorpayOrderFailed   = "RAZORPAY_ORDER_FAILED";   // upstream status
+    public const string RazorpayPayoutFailed  = "RAZORPAY_PAYOUT_FAILED";  // upstream status
+
     // ── Fallback ──────────────────────────────────────────────────────────
     public const string InternalError = "INTERNAL_ERROR"; // 500
 }
