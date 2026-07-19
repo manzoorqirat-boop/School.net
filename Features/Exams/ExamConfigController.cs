@@ -104,10 +104,10 @@ public sealed class ExamConfigController : ControllerBase
         return Ok(new { ok = true });
     }
 
-    public sealed record BulkSubjects(List<Subject>? Subjects);
+    public sealed record BulkSubjectsRequest(List<Subject>? Subjects);
     [HttpPost("subjects/bulk")]
     [RequirePrivilege("exam:create")]
-    public async Task<IActionResult> BulkSubjects([FromBody] BulkSubjects req, CancellationToken ct)
+    public async Task<IActionResult> BulkSubjects([FromBody] BulkSubjectsRequest req, CancellationToken ct)
     {
         if (req.Subjects is null || req.Subjects.Count == 0) return BadRequest(new { error = "subjects array required" });
         foreach (var s in req.Subjects) { s.SchoolId = _tenant.SchoolId ?? Guid.Empty; _db.Subjects.Add(s); }
