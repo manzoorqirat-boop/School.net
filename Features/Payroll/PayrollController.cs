@@ -25,7 +25,8 @@ public sealed class PayrollController : ControllerBase
     {
         var q = _db.SalaryStructures.AsNoTracking().AsQueryable();
         if (teacherId is { } t) q = q.Where(s => s.TeacherId == t);
-        return Ok(new { items = await q.Where(s => s.IsActive).ToListAsync(ct) });
+        // Bare array — page does (list || []).
+        return Ok(await q.Where(s => s.IsActive).ToListAsync(ct));
     }
 
     [HttpPost("structures")]
