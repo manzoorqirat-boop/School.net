@@ -272,7 +272,7 @@ public sealed class AuthController : ControllerBase
 
     private TokenPair IssueTokens(User user) =>
         _tokens.Generate(user.Id, user.SchoolId,
-                         EnumWireBridge.RoleToWire(user.Role), user.Username);
+                         EnumWireBridge.RoleToWire(user.Role), user.Username, user.StudentId);
 
     private void StoreRefreshToken(User user, string rawToken)
     {
