@@ -141,7 +141,12 @@ public sealed class AttendanceController : ControllerBase
 
                 if (existing is null)
                 {
-                    _db.Attendance.Add(new Attendance
+                    // Fully qualified: this file's namespace is
+                    // QMSoft.Api.Features.Attendance, which shadows the
+                    // Attendance entity type from QMSoft.Api.Domain.Entities —
+                    // an unqualified `new Attendance { ... }` resolves to the
+                    // namespace, not the entity, and fails to compile.
+                    _db.Attendance.Add(new QMSoft.Api.Domain.Entities.Attendance
                     {
                         SchoolId = _tenant.SchoolId ?? Guid.Empty,
                         StudentId = e.StudentId,
