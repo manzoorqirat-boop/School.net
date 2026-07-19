@@ -221,6 +221,19 @@ builder.Services
 builder.Services.AddSingleton<IAuthorizationPolicyProvider, PrivilegePolicyProvider>();
 builder.Services.AddScoped<IAuthorizationHandler, PrivilegeHandler>();
 builder.Services.AddScoped<IPrivilegeResolver, DbPrivilegeResolver>();
+builder.Services.AddMemoryCache();                       // auth rate limiting
+builder.Services.AddScoped<QMSoft.Api.Features.IAuditWriter, QMSoft.Api.Features.AuditWriter>();
+builder.Services.AddScoped<QMSoft.Api.Features.Students.ParentLinkService>();
+builder.Services.AddScoped<QMSoft.Api.Features.Payments.RazorpayService>();
+builder.Services.AddScoped<QMSoft.Api.Features.Documents.PdfService>();
+builder.Services.AddScoped<QMSoft.Api.Features.Jobs.LateFeeJob>();
+
+// Hangfire — Postgres-backed recurring jobs (replaces BullMQ). Uses the same DB.
+builder.Services.AddHangfire(cfg => cfg.UsePostgreSqlStorage(o => o.UseNpgsqlConnection(connString)));
+builder.Services.AddHangfireServer();
+
+// QuestPDF community licence — required, set once at startup.
+QuestPDF.Settings.License = QuestPDF.Infrastructure.LicenseType.Community;
 builder.Services.AddAuthorization();
 
 // ─── MVC + JSON ───────────────────────────────────────────────────────────────
@@ -334,17 +347,14 @@ await using (var boot = new NpgsqlConnection(connString))
     await cmd.ExecuteNonQueryAsync();
 }
 
-// ── Ensure schema on boot ────────────────────────────────────────────────────
-// No EF Migrations in use — schema is created directly from the current model
-// (AppDbContext + Data/Configurations/*.cs) on first boot. No-op if tables
-// already exist. NOTE: this does NOT apply incremental schema changes to an
-// existing database — if the model changes later, the DB must be dropped and
-// recreated (DROP SCHEMA public CASCADE; CREATE SCHEMA public;) for changes
-// to take effect.
+// ── Migrate on boot ──────────────────────────────────────────────────────────
+// Applies any pending committed migrations. Railway deploys self-migrate;
+// no-op when up to date. (Requires the Migrations/ folder to be committed —
+// `dotnet ef migrations add Initial` locally, see README.)
 using (var scope = app.Services.CreateScope())
 {
     var db = scope.ServiceProvider.GetRequiredService<AppDbContext>();
-    await db.Database.EnsureCreatedAsync();
+    await db.Database.MigrateAsync();
 
     // Payroll immutability triggers — applied here instead of inside the
     // migration so a regenerated InitialCreate never silently drops them.
@@ -356,6 +366,10 @@ using (var scope = app.Services.CreateScope())
 // Idempotent — safe on every boot, which is what makes it usable as a Railway
 // release command. Seed__* provisions the superadmin; Rescue__* is break-glass.
 await app.SeedDatabaseAsync();
+
+// Daily late-fee / overdue sweep at 01:00 UTC.
+Hangfire.RecurringJob.AddOrUpdate<QMSoft.Api.Features.Jobs.LateFeeJob>(
+    "late-fee-sweep", j => j.RunAsync(CancellationToken.None), "0 1 * * *");
 
 app.Run();
 
