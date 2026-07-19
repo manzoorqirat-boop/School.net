@@ -8,8 +8,6 @@ using Microsoft.AspNetCore.Authorization;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.IdentityModel.Tokens;
 using Npgsql;
-using Hangfire;
-using Hangfire.PostgreSql;
 using QMSoft.Api.Domain.Entities;
 using QMSoft.Api.Authorization;
 using QMSoft.Api.Data;
@@ -226,30 +224,16 @@ builder.Services.AddScoped<IPrivilegeResolver, DbPrivilegeResolver>();
 builder.Services.AddMemoryCache();                       // auth rate limiting
 builder.Services.AddScoped<QMSoft.Api.Features.IAuditWriter, QMSoft.Api.Features.AuditWriter>();
 builder.Services.AddScoped<QMSoft.Api.Features.Students.ParentLinkService>();
-
-// ─── Phase 4: Payments / Documents / Jobs ──────────────────────────────────────
-// RazorpayService needs a pooled HttpClient (outbound calls to api.razorpay.com),
-// hence AddHttpClient rather than AddScoped — see the doc comment on
-// RazorpayService for why.
-builder.Services.AddHttpClient<QMSoft.Api.Features.Payments.IRazorpayService,
-                                QMSoft.Api.Features.Payments.RazorpayService>();
-
-builder.Services.AddScoped<QMSoft.Api.Features.Documents.IPdfService,
-                            QMSoft.Api.Features.Documents.PdfService>();
-
-// NoOpFeeReminderNotifier logs instead of sending — swap for a real
-// email/SMS-backed implementation once services/notification.js is ported.
-builder.Services.AddScoped<QMSoft.Api.Features.Jobs.IFeeReminderNotifier,
-                            QMSoft.Api.Features.Jobs.NoOpFeeReminderNotifier>();
+builder.Services.AddScoped<QMSoft.Api.Features.Payments.RazorpayService>();
+builder.Services.AddScoped<QMSoft.Api.Features.Documents.PdfService>();
 builder.Services.AddScoped<QMSoft.Api.Features.Jobs.LateFeeJob>();
 
-// Hangfire — Postgres-backed recurring jobs (replaces BullMQ + node-cron).
+// Hangfire — Postgres-backed recurring jobs (replaces BullMQ). Uses the same DB.
 builder.Services.AddHangfire(cfg => cfg.UsePostgreSqlStorage(o => o.UseNpgsqlConnection(connString)));
 builder.Services.AddHangfireServer();
 
 // QuestPDF community licence — required, set once at startup.
 QuestPDF.Settings.License = QuestPDF.Infrastructure.LicenseType.Community;
-
 builder.Services.AddAuthorization();
 
 // ─── MVC + JSON ───────────────────────────────────────────────────────────────
@@ -383,7 +367,7 @@ using (var scope = app.Services.CreateScope())
 // release command. Seed__* provisions the superadmin; Rescue__* is break-glass.
 await app.SeedDatabaseAsync();
 
-// Daily late-fee / overdue-reminder sweep at 01:00 UTC.
+// Daily late-fee / overdue sweep at 01:00 UTC.
 Hangfire.RecurringJob.AddOrUpdate<QMSoft.Api.Features.Jobs.LateFeeJob>(
     "late-fee-sweep", j => j.RunAsync(CancellationToken.None), "0 1 * * *");
 
