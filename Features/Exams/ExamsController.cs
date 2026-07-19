@@ -141,8 +141,7 @@ public sealed class ExamsController : ControllerBase
 
         var subjectNames = exam.Subjects.ToDictionary(s => s.SubjectId, s => s.SubjectName);
         int saved = 0;
-        await using var tx = await _db.Database.BeginTransactionAsync(ct);
-        try
+        await Tx.RunAsync(_db, async () =>
         {
             foreach (var c in req.Cells)
             {
@@ -169,9 +168,7 @@ public sealed class ExamsController : ControllerBase
                 saved++;
             }
             await _db.SaveChangesAsync(ct);
-            await tx.CommitAsync(ct);
-        }
-        catch { await tx.RollbackAsync(ct); throw; }
+        }, ct);
 
         await _audit.WriteAsync("exam.marksheet_save", "exam", id.ToString(),
             metaJson: System.Text.Json.JsonSerializer.Serialize(new { saved }), ct: ct);
