@@ -74,24 +74,25 @@ public sealed class WebhookController : ControllerBase
             var inv = await _db.FeeInvoices.IgnoreQueryFilters().FirstOrDefaultAsync(i => i.Id == invoiceId, ct);
             if (inv is null) return Ok(new { received = true });
 
-            await using var tx = await _db.Database.BeginTransactionAsync(ct);
             try
             {
-                _db.Payments.Add(new Payment
+                await Tx.RunAsync(_db, async () =>
                 {
-                    SchoolId = inv.SchoolId, InvoiceId = inv.Id, StudentId = inv.StudentId,
-                    ReceiptNo = $"RZP-{DateTime.UtcNow:yyyyMMddHHmmss}-{Random.Shared.Next(1000, 9999)}",
-                    Amount = amountPaise / 100m, Method = PaymentMethod.Razorpay,
-                    RazorpayOrderId = orderId, RazorpayPaymentId = paymentId,
-                    RazorpayVerified = true, Status = PaymentStatus.Success, PaidAt = DateTime.UtcNow,
-                });
-                inv.AmountPaid += amountPaise / 100m;
-                inv.RecomputeStoredStatus();
-                await _db.SaveChangesAsync(ct);
-                await tx.CommitAsync(ct);
+                    _db.Payments.Add(new Payment
+                    {
+                        SchoolId = inv.SchoolId, InvoiceId = inv.Id, StudentId = inv.StudentId,
+                        ReceiptNo = $"RZP-{DateTime.UtcNow:yyyyMMddHHmmss}-{Random.Shared.Next(1000, 9999)}",
+                        Amount = amountPaise / 100m, Method = PaymentMethod.Razorpay,
+                        RazorpayOrderId = orderId, RazorpayPaymentId = paymentId,
+                        RazorpayVerified = true, Status = PaymentStatus.Success, PaidAt = DateTime.UtcNow,
+                    });
+                    inv.AmountPaid += amountPaise / 100m;
+                    inv.RecomputeStoredStatus();
+                    await _db.SaveChangesAsync(ct);
+                }, ct);
             }
-            catch (DbUpdateException)   // race: another webhook won the insert
-            { await tx.RollbackAsync(ct); return Ok(new { received = true, duplicate = true }); }
+            catch (DbUpdateException)   // race: another webhook won the insert (uq_payments_rzp)
+            { return Ok(new { received = true, duplicate = true }); }
         }
 
         return Ok(new { received = true });
