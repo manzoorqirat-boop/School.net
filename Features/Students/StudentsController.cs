@@ -371,8 +371,7 @@ public sealed class StudentsController : ControllerBase
         var totalPromoted = 0;
 
         // All moves in ONE transaction — a half-promoted year is corruption.
-        await using var tx = await _db.Database.BeginTransactionAsync(ct);
-        try
+        await Tx.RunAsync(_db, async () =>
         {
             foreach (var cls in graduating)
             {
@@ -399,20 +398,13 @@ public sealed class StudentsController : ControllerBase
 
                 var n = await q.ExecuteUpdateAsync(u => u
                     .SetProperty(s => s.Class, p.ToClass)
-                    .SetProperty(s => s.Section, s => toSection ?? s.Section)
+                    .SetProperty(s => s.Section, toSection ?? s.Section)
                     .SetProperty(s => s.AcademicYear, req.ToAcademicYear), ct);
 
                 results.Add(new { p.FromClass, p.FromSection, p.ToClass, toSection, modifiedCount = n });
                 totalPromoted += n;
             }
-
-            await tx.CommitAsync(ct);
-        }
-        catch
-        {
-            await tx.RollbackAsync(ct);
-            throw;                       // → exception middleware envelope
-        }
+        }, ct);   // → exception middleware envelope on failure
 
         await _audit.WriteAsync("student.bulk_promote", "student",
             metaJson: System.Text.Json.JsonSerializer.Serialize(new { req.FromAcademicYear, req.ToAcademicYear, totalPromoted }),
