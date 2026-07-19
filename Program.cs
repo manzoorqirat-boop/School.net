@@ -224,16 +224,21 @@ builder.Services.AddScoped<IPrivilegeResolver, DbPrivilegeResolver>();
 builder.Services.AddMemoryCache();                       // auth rate limiting
 builder.Services.AddScoped<QMSoft.Api.Features.IAuditWriter, QMSoft.Api.Features.AuditWriter>();
 builder.Services.AddScoped<QMSoft.Api.Features.Students.ParentLinkService>();
-builder.Services.AddScoped<QMSoft.Api.Features.Payments.RazorpayService>();
-builder.Services.AddScoped<QMSoft.Api.Features.Documents.PdfService>();
-builder.Services.AddScoped<QMSoft.Api.Features.Jobs.LateFeeJob>();
 
-// Hangfire — Postgres-backed recurring jobs (replaces BullMQ). Uses the same DB.
-builder.Services.AddHangfire(cfg => cfg.UsePostgreSqlStorage(o => o.UseNpgsqlConnection(connString)));
-builder.Services.AddHangfireServer();
+// Phase 4 (jobs / PDF / Razorpay) — NOT YET PORTED.
+// RazorpayService, PdfService, LateFeeJob and their Hangfire/QuestPDF wiring
+// live in the Node original (services/razorpay.js, services/reportCardPdf.js,
+// workers/index.js) but have no .NET implementation yet. Re-add this block —
+// and uncomment the matching packages in QMSoft.Api.csproj — once those three
+// classes are ported:
+//
+// builder.Services.AddScoped<QMSoft.Api.Features.Payments.RazorpayService>();
+// builder.Services.AddScoped<QMSoft.Api.Features.Documents.PdfService>();
+// builder.Services.AddScoped<QMSoft.Api.Features.Jobs.LateFeeJob>();
+// builder.Services.AddHangfire(cfg => cfg.UsePostgreSqlStorage(o => o.UseNpgsqlConnection(connString)));
+// builder.Services.AddHangfireServer();
+// QuestPDF.Settings.License = QuestPDF.Infrastructure.LicenseType.Community;
 
-// QuestPDF community licence — required, set once at startup.
-QuestPDF.Settings.License = QuestPDF.Infrastructure.LicenseType.Community;
 builder.Services.AddAuthorization();
 
 // ─── MVC + JSON ───────────────────────────────────────────────────────────────
@@ -367,9 +372,10 @@ using (var scope = app.Services.CreateScope())
 // release command. Seed__* provisions the superadmin; Rescue__* is break-glass.
 await app.SeedDatabaseAsync();
 
-// Daily late-fee / overdue sweep at 01:00 UTC.
-Hangfire.RecurringJob.AddOrUpdate<QMSoft.Api.Features.Jobs.LateFeeJob>(
-    "late-fee-sweep", j => j.RunAsync(CancellationToken.None), "0 1 * * *");
+// Phase 4: daily late-fee / overdue sweep re-goes here once LateFeeJob + Hangfire
+// are wired back up above.
+// Hangfire.RecurringJob.AddOrUpdate<QMSoft.Api.Features.Jobs.LateFeeJob>(
+//     "late-fee-sweep", j => j.RunAsync(CancellationToken.None), "0 1 * * *");
 
 app.Run();
 
