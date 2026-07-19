@@ -396,10 +396,14 @@ public sealed class StudentsController : ControllerBase
                 if (!string.IsNullOrEmpty(p.FromSection))
                     q = q.Where(s => s.Section == p.FromSection);
 
-                var n = await q.ExecuteUpdateAsync(u => u
-                    .SetProperty(s => s.Class, p.ToClass)
-                    .SetProperty(s => s.Section, toSection ?? s.Section)
-                    .SetProperty(s => s.AcademicYear, req.ToAcademicYear), ct);
+                var n = toSection is null
+                    ? await q.ExecuteUpdateAsync(u => u
+                        .SetProperty(s => s.Class, p.ToClass)
+                        .SetProperty(s => s.AcademicYear, req.ToAcademicYear), ct)
+                    : await q.ExecuteUpdateAsync(u => u
+                        .SetProperty(s => s.Class, p.ToClass)
+                        .SetProperty(s => s.Section, toSection)
+                        .SetProperty(s => s.AcademicYear, req.ToAcademicYear), ct);
 
                 results.Add(new { p.FromClass, p.FromSection, p.ToClass, toSection, modifiedCount = n });
                 totalPromoted += n;
