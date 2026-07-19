@@ -132,10 +132,21 @@ public sealed class PrivilegesController : ControllerBase
     [RequirePrivilege("user:manage")]
     public async Task<IActionResult> GetMatrix(CancellationToken ct)
     {
-        if (_tenant.SchoolId is not { } sid) return Ok(new { matrix = new Dictionary<string, object>() });
+        var roles = new[] { "school_admin","principal","accountant","teacher","parent","student" };  // superadmin excluded
+
+        if (_tenant.SchoolId is not { } sid)
+            return Ok(new { matrix = new Dictionary<string, object>(), availableRoles = roles, privileges = PrivilegeDefaults.Map.Keys });
+
         var m = await _resolver.MatrixAsync(sid);
-        var matrix = m.ToDictionary(kv => kv.Key, kv => (object)new { roles = kv.Value.Roles, isCustomized = kv.Value.IsCustomized });
-        return Ok(new { matrix });
+        var matrix = m.ToDictionary(
+            kv => kv.Key,
+            kv => (object)new
+            {
+                roles = kv.Value.Roles,
+                isCustomized = kv.Value.IsCustomized,
+                @default = PrivilegeDefaults.Map.GetValueOrDefault(kv.Key) ?? Array.Empty<string>(),
+            });
+        return Ok(new { matrix, availableRoles = roles, privileges = PrivilegeDefaults.Map.Keys });
     }
 
     public sealed record UpdatePrivilegeRequest(List<string> Roles);
