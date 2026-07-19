@@ -1,4 +1,5 @@
 using Hangfire;
+using Hangfire.PostgreSql;
 using System.Text;
 using System.Text.Json;
 using System.Text.Json.Serialization;
@@ -230,7 +231,7 @@ builder.Services.AddScoped<QMSoft.Api.Features.Documents.PdfService>();
 builder.Services.AddScoped<QMSoft.Api.Features.Jobs.LateFeeJob>();
 
 // Hangfire — Postgres-backed recurring jobs (replaces BullMQ). Uses the same DB.
-builder.Services.AddHangfire(cfg => cfg.UsePostgreSqlStorage(o => o.UseNpgsqlConnection(connString)));
+builder.Services.AddHangfire(cfg => cfg.UsePostgreSqlStorage(connString));
 builder.Services.AddHangfireServer();
 
 // QuestPDF community licence — required, set once at startup.
