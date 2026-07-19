@@ -68,13 +68,18 @@ public interface IPdfService
 /// </summary>
 public sealed class PdfService : IPdfService
 {
-    private static readonly string Navy = Colors.Blue.Darken3;   // ≈ #1e3a8a
-    private static readonly string GraySmall = Colors.Grey.Darken1; // ≈ #555
-    private static readonly string GrayFaint = Colors.Grey.Lighten1; // ≈ #bbb
-    private static readonly string HeaderFill = Colors.Blue.Lighten5; // ≈ #e8edf8
-    private static readonly string StripeFill = Colors.Grey.Lighten4; // ≈ #f7f8fc
-    private static readonly string FailRed = Colors.Red.Darken2; // ≈ #b91c1c
-    private static readonly string BorderGray = Colors.Grey.Lighten1; // ≈ #ccc
+    // Colors.* returns QuestPDF's Color type, which has implicit conversions
+    // to/from string. Declaring these fields as `string` made every ternary
+    // mixing a field with a bare Colors.* value (e.g. Colors.Black,
+    // Colors.White) ambiguous between the string and Color conversion paths —
+    // CS0172. Typing the fields as Color removes the ambiguity outright.
+    private static readonly Color Navy = Colors.Blue.Darken3;   // ≈ #1e3a8a
+    private static readonly Color GraySmall = Colors.Grey.Darken1; // ≈ #555
+    private static readonly Color GrayFaint = Colors.Grey.Lighten1; // ≈ #bbb
+    private static readonly Color HeaderFill = Colors.Blue.Lighten5; // ≈ #e8edf8
+    private static readonly Color StripeFill = Colors.Grey.Lighten4; // ≈ #f7f8fc
+    private static readonly Color FailRed = Colors.Red.Darken2; // ≈ #b91c1c
+    private static readonly Color BorderGray = Colors.Grey.Lighten1; // ≈ #ccc
 
     public byte[] GenerateReportCard(ReportCardData data)
     {
@@ -359,7 +364,7 @@ public sealed class PdfService : IPdfService
                   .PaddingVertical(5).PaddingHorizontal(4)
                   .DefaultTextStyle(x => x.FontSize(9).Bold().FontColor(Navy));
 
-    private static IContainer RowCellStyle(IContainer container, string fill, string textColor) =>
+    private static IContainer RowCellStyle(IContainer container, Color fill, Color textColor) =>
         container.Background(fill)
                   .BorderBottom(0.5f).BorderColor(BorderGray)
                   .PaddingVertical(5).PaddingHorizontal(4)
