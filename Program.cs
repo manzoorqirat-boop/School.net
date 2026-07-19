@@ -370,8 +370,15 @@ using (var scope = app.Services.CreateScope())
 await app.SeedDatabaseAsync();
 
 // Daily late-fee / overdue sweep at 01:00 UTC.
-Hangfire.RecurringJob.AddOrUpdate<QMSoft.Api.Features.Jobs.LateFeeJob>(
-    "late-fee-sweep", j => j.RunAsync(CancellationToken.None), "0 1 * * *");
+// Use the DI-resolved manager, NOT the static RecurringJob facade — the static
+// one reads JobStorage.Current, which isn't populated at this point in boot and
+// throws "Current JobStorage instance has not been initialized yet".
+using (var scope = app.Services.CreateScope())
+{
+    var recurring = scope.ServiceProvider.GetRequiredService<Hangfire.IRecurringJobManager>();
+    recurring.AddOrUpdate<QMSoft.Api.Features.Jobs.LateFeeJob>(
+        "late-fee-sweep", j => j.RunAsync(CancellationToken.None), "0 1 * * *");
+}
 
 app.Run();
 
