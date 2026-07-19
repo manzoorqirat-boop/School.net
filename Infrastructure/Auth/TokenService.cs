@@ -10,7 +10,7 @@ public sealed record TokenPair(string AccessToken, string RefreshToken, int Expi
 
 public interface ITokenService
 {
-    TokenPair Generate(Guid userId, Guid? schoolId, string role, string username);
+    TokenPair Generate(Guid userId, Guid? schoolId, string role, string username, Guid? studentId = null);
     ClaimsPrincipal? ValidateRefreshToken(string token);
     int AccessExpirySeconds { get; }
 }
@@ -59,7 +59,7 @@ public sealed class TokenService : ITokenService
         _refreshSeconds = ParseExpiry(cfg["JWT_REFRESH_EXPIRY"], 604800); // 7d
     }
 
-    public TokenPair Generate(Guid userId, Guid? schoolId, string role, string username)
+    public TokenPair Generate(Guid userId, Guid? schoolId, string role, string username, Guid? studentId = null)
     {
         var now = DateTime.UtcNow;
 
@@ -75,6 +75,10 @@ public sealed class TokenService : ITokenService
         // TenantContext.SchoolId stays null and IsFilterActive goes false.
         if (schoolId.HasValue)
             claims.Add(new Claim(TenantContext.SchoolIdClaim, schoolId.Value.ToString()));
+
+        // Only present for role == "student" — powers ITenantContext.StudentId.
+        if (studentId.HasValue)
+            claims.Add(new Claim(TenantContext.StudentIdClaim, studentId.Value.ToString()));
 
         var access = new JwtSecurityToken(
             issuer: _issuer,
