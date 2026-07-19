@@ -17,7 +17,7 @@ namespace QMSoft.Api.Features.Documents;
 /// </summary>
 public sealed class PdfService
 {
-    public byte[] Payslip(Payroll p) => Document.Create(c =>
+    public byte[] Payslip(Domain.Entities.Payroll p) => Document.Create(c =>
         c.Page(page =>
         {
             page.Margin(40); page.Size(PageSizes.A4);
