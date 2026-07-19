@@ -80,18 +80,18 @@ public sealed class FeeOnlineController : ControllerBase
             RazorpayOrderId = req.RazorpayOrderId, RazorpayPaymentId = req.RazorpayPaymentId,
             RazorpayVerified = true, Status = PaymentStatus.Success, PaidAt = DateTime.UtcNow,
         };
-        await using var tx = await _db.Database.BeginTransactionAsync(ct);
         try
         {
-            _db.Payments.Add(payment);
-            inv.AmountPaid += balance;
-            inv.RecomputeStoredStatus();
-            await _db.SaveChangesAsync(ct);
-            await tx.CommitAsync(ct);
+            await Tx.RunAsync(_db, async () =>
+            {
+                _db.Payments.Add(payment);
+                inv.AmountPaid += balance;
+                inv.RecomputeStoredStatus();
+                await _db.SaveChangesAsync(ct);
+            }, ct);
         }
-        catch (DbUpdateException)   // webhook beat us to it
+        catch (DbUpdateException)   // webhook beat us to it (uq_payments_rzp)
         {
-            await tx.RollbackAsync(ct);
             var p = await _db.Payments.FirstOrDefaultAsync(x => x.RazorpayPaymentId == req.RazorpayPaymentId, ct);
             return Ok(new { payment = p, invoice = inv });
         }
