@@ -145,6 +145,24 @@ public sealed class InvoicesController : ControllerBase
         return Ok(new { payment, invoice = inv });
     }
 
+    // ── GET /:id/payments ─────────────────────────────────────────────────
+    // Payment history for an invoice (newest first). Lets clients show pending
+    // cheques so they can be cleared/bounced.
+    [HttpGet("{id:guid}/payments")]
+    [RequirePrivilege("fee:view")]
+    public async Task<IActionResult> Payments(Guid id, CancellationToken ct)
+    {
+        var inv = await _db.FeeInvoices.AsNoTracking().FirstOrDefaultAsync(i => i.Id == id, ct);
+        if (inv is null) return NotFound(new { error = "Not found" });
+
+        var items = await _db.Payments.AsNoTracking()
+            .Where(p => p.InvoiceId == id)
+            .OrderByDescending(p => p.PaidAt)
+            .ToListAsync(ct);
+
+        return Ok(new { items });
+    }
+
     // ── PATCH /:id/payments/:paymentId/cheque-status ──────────────────────
     // Clear or bounce a pending cheque. Only a pending cheque can transition;
     // on 'success' the invoice is finally credited. (Ported from Node.)
