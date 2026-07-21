@@ -112,11 +112,18 @@ public sealed class InvoicesController : ControllerBase
         }
 
         Enum.TryParse<PaymentMethod>(req.Method, true, out var method);
+
+        // Cheques are NOT money in the bank yet — record them as Pending and DON'T
+        // credit the invoice until the cheque clears (PATCH .../cheque-status).
+        // All other methods clear immediately. (Matches Node feeController.)
+        var isCheque = method == PaymentMethod.Cheque;
+
         var payment = new Payment
         {
             SchoolId = _tenant.SchoolId ?? Guid.Empty, InvoiceId = id, StudentId = inv.StudentId,
             ReceiptNo = $"RCPT-{DateTime.UtcNow:yyyyMMddHHmmss}-{Random.Shared.Next(1000, 9999)}",
-            Amount = req.Amount, Method = method, Status = PaymentStatus.Success,
+            Amount = req.Amount, Method = method,
+            Status = isCheque ? PaymentStatus.Pending : PaymentStatus.Success,
             ChequeNo = req.ChequeNo, ChequeBank = req.ChequeBank, ChequeDate = req.ChequeDate,
             TransactionRef = req.TransactionRef, Notes = req.Notes, IdempotencyKey = req.IdempotencyKey,
             CollectedByUserId = _tenant.UserId, PaidAt = DateTime.UtcNow,
@@ -125,13 +132,64 @@ public sealed class InvoicesController : ControllerBase
         await Tx.RunAsync(_db, async () =>
         {
             _db.Payments.Add(payment);
-            inv.AmountPaid += req.Amount;               // denormalised sum
-            inv.RecomputeStoredStatus();                // pending→partial→paid
+            if (!isCheque)
+            {
+                inv.AmountPaid += req.Amount;           // denormalised sum
+                inv.RecomputeStoredStatus();            // pending→partial→paid
+            }
             await _db.SaveChangesAsync(ct);
         }, ct);    // 23505 on idem/receipt → 409 envelope
 
         await _audit.WriteAsync("invoice.pay_offline", "payment", payment.Id.ToString(),
             metaJson: System.Text.Json.JsonSerializer.Serialize(new { invoiceId = id, amount = req.Amount, method = req.Method }), ct: ct);
+        return Ok(new { payment, invoice = inv });
+    }
+
+    // ── PATCH /:id/payments/:paymentId/cheque-status ──────────────────────
+    // Clear or bounce a pending cheque. Only a pending cheque can transition;
+    // on 'success' the invoice is finally credited. (Ported from Node.)
+    public sealed record ChequeStatusRequest(string? Status, DateOnly? ChequeDate);
+
+    [HttpPatch("{id:guid}/payments/{paymentId:guid}/cheque-status")]
+    [RequirePrivilege("fee:collect")]
+    public async Task<IActionResult> UpdateChequeStatus(
+        Guid id, Guid paymentId, [FromBody] ChequeStatusRequest req, CancellationToken ct)
+    {
+        if (req.Status is not ("success" or "bounced"))
+            return BadRequest(new { error = "status must be 'success' or 'bounced'", code = "INVALID_STATUS" });
+
+        var inv = await _db.FeeInvoices.FirstOrDefaultAsync(i => i.Id == id, ct);
+        if (inv is null) return NotFound(new { error = "Invoice not found" });
+
+        var payment = await _db.Payments.FirstOrDefaultAsync(
+            p => p.Id == paymentId && p.InvoiceId == id && p.Method == PaymentMethod.Cheque, ct);
+        if (payment is null) return NotFound(new { error = "Cheque payment not found" });
+
+        if (payment.Status != PaymentStatus.Pending)
+            return BadRequest(new
+            {
+                error = $"Cheque is already '{payment.Status.ToString().ToLowerInvariant()}' — only pending cheques can be updated",
+                code = "CHEQUE_NOT_PENDING",
+            });
+
+        await Tx.RunAsync(_db, async () =>
+        {
+            payment.Status = req.Status == "success" ? PaymentStatus.Success : PaymentStatus.Failed;
+            if (req.ChequeDate is { } cd) payment.ChequeDate = cd;
+
+            // Only credit the invoice when the cheque actually clears.
+            if (req.Status == "success")
+            {
+                inv.AmountPaid += payment.Amount;
+                inv.RecomputeStoredStatus();
+            }
+            await _db.SaveChangesAsync(ct);
+        }, ct);
+
+        await _audit.WriteAsync($"fee.cheque_{req.Status}", "payment", payment.Id.ToString(),
+            metaJson: System.Text.Json.JsonSerializer.Serialize(
+                new { invoiceNo = inv.InvoiceNo, amount = payment.Amount, chequeNo = payment.ChequeNo }), ct: ct);
+
         return Ok(new { payment, invoice = inv });
     }
 
