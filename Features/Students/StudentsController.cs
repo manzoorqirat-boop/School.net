@@ -240,7 +240,9 @@ public sealed class StudentsController : ControllerBase
     [RequirePrivilege("student:update")]
     public async Task<IActionResult> Update(Guid id, [FromBody] Student body, CancellationToken ct)
     {
-        var s = await _db.Students.FirstOrDefaultAsync(x => x.Id == id, ct);
+        var s = await _db.Students
+            .Include(x => x.Siblings).Include(x => x.PassedExams)
+            .FirstOrDefaultAsync(x => x.Id == id, ct);
         if (s is null) return NotFound(new { error = "Not found" });
 
         // Copy mutable fields; blank academicYear is ignored (Node deletes it).
@@ -459,7 +461,7 @@ public sealed class StudentsController : ControllerBase
     /// <summary>Copies editable fields onto the tracked entity; blank
     /// academicYear ignored (Node deletes it from the $set). Snapshot/system
     /// fields (share token, isDeleted, timestamps) are never overwritten here.</summary>
-    private static void ApplyUpdate(Student s, Student b)
+    private void ApplyUpdate(Student s, Student b)
     {
         s.RollNo = b.RollNo; s.FirstName = b.FirstName; s.LastName = b.LastName;
         s.FirstNameHi = b.FirstNameHi; s.LastNameHi = b.LastNameHi;
@@ -478,5 +480,27 @@ public sealed class StudentsController : ControllerBase
         s.AadharNo = b.AadharNo; s.BirthCertNo = b.BirthCertNo;
         s.PrevSchool = b.PrevSchool; s.PrevClass = b.PrevClass;
         s.TcNo = b.TcNo; s.TcDate = b.TcDate;
+
+        // Child collections: replace-all only when the client actually sent the
+        // array. A missing/null array means "not editing these" (leave as-is);
+        // an empty array means "clear them". Matches the mobile/web form, which
+        // always sends the full current list when the section is touched.
+        if (b.Siblings is not null)
+        {
+            _db.StudentSiblings.RemoveRange(s.Siblings);
+            s.Siblings = b.Siblings.Select(x => new StudentSibling
+            {
+                Name = x.Name, Class = x.Class, Relation = x.Relation, SameSchool = x.SameSchool,
+            }).ToList();
+        }
+        if (b.PassedExams is not null)
+        {
+            _db.StudentPassedExams.RemoveRange(s.PassedExams);
+            s.PassedExams = b.PassedExams.Select(x => new StudentPassedExam
+            {
+                ExamName = x.ExamName, Institution = x.Institution, Year = x.Year,
+                RollNo = x.RollNo, Board = x.Board, MaxMarks = x.MaxMarks, ObtainedMarks = x.ObtainedMarks,
+            }).ToList();
+        }
     }
 }
