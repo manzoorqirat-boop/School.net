@@ -27,7 +27,7 @@ public sealed class AttendanceController : ControllerBase
     [RequirePrivilege("attendance:view")]
     public async Task<IActionResult> Roster(
         [FromQuery] string? @class, [FromQuery] string? section, [FromQuery] DateOnly? date,
-        [FromQuery] string mode = "daily", [FromQuery] int? period = null, [FromQuery] string? subject = null,
+        [FromQuery] string mode = "daily", [FromQuery] int? period, [FromQuery] string? subject,
         CancellationToken ct = default)
     {
         if (string.IsNullOrEmpty(@class) || string.IsNullOrEmpty(section))
@@ -141,12 +141,7 @@ public sealed class AttendanceController : ControllerBase
 
                 if (existing is null)
                 {
-                    // Fully qualified: this file's namespace is
-                    // QMSoft.Api.Features.Attendance, which shadows the
-                    // Attendance entity type from QMSoft.Api.Domain.Entities —
-                    // an unqualified `new Attendance { ... }` resolves to the
-                    // namespace, not the entity, and fails to compile.
-                    _db.Attendance.Add(new QMSoft.Api.Domain.Entities.Attendance
+                    _db.Attendance.Add(new Attendance
                     {
                         SchoolId = _tenant.SchoolId ?? Guid.Empty,
                         StudentId = e.StudentId,
@@ -341,6 +336,107 @@ public sealed class AttendanceController : ControllerBase
             marked = working,
             percentage = AttendanceRules.Percentage(present, late, working),
         });
+    }
+
+    // ── GET /api/attendance/reports/trends ────────────────────────────────
+    // Per-day attendance percentage for a class/section over a date range.
+    // Ported from Node ctrl.trends: group by date×status → one row per day.
+    [HttpGet("reports/trends")]
+    [RequirePrivilege("attendance:report")]
+    public async Task<IActionResult> Trends(
+        [FromQuery] string? @class, [FromQuery] string? section,
+        [FromQuery] DateOnly? from, [FromQuery] DateOnly? to,
+        [FromQuery] string mode = "daily", [FromQuery] int? period, [FromQuery] string? subject,
+        CancellationToken ct = default)
+    {
+        if (string.IsNullOrEmpty(@class) || string.IsNullOrEmpty(section))
+            return BadRequest(new { error = "class and section required" });
+
+        var isPeriod = mode == "period";
+        var m = isPeriod ? AttendanceMode.Period : AttendanceMode.Daily;
+
+        var q = _db.Attendance.AsNoTracking()
+            .Where(a => a.Class == @class && a.Section == section && a.Mode == m);
+        if (from is { } f) q = q.Where(a => a.Date >= f);
+        if (to is { } t) q = q.Where(a => a.Date <= t);
+        if (isPeriod)
+        {
+            if (period is { } p) q = q.Where(a => a.Period == (short)p);
+            if (!string.IsNullOrEmpty(subject)) q = q.Where(a => a.Subject == subject);
+        }
+
+        var grouped = await q
+            .GroupBy(a => new { a.Date, a.Status })
+            .Select(g => new { g.Key.Date, g.Key.Status, Count = g.Count() })
+            .ToListAsync(ct);
+
+        var rows = grouped
+            .GroupBy(x => x.Date)
+            .OrderBy(g => g.Key)
+            .Select(g =>
+            {
+                var c = g.ToDictionary(x => x.Status, x => x.Count);
+                int present = c.GetValueOrDefault(AttendanceStatus.Present);
+                int absent = c.GetValueOrDefault(AttendanceStatus.Absent);
+                int late = c.GetValueOrDefault(AttendanceStatus.Late);
+                int leave = c.GetValueOrDefault(AttendanceStatus.Leave);
+                int holiday = c.GetValueOrDefault(AttendanceStatus.Holiday);
+                var total = present + absent + late + leave;   // holiday excluded
+                return new
+                {
+                    date = g.Key, present, absent, late, leave, holiday, total,
+                    percentage = total == 0 ? 0d : Math.Round((present + late) / (double)total * 1000) / 10,
+                };
+            })
+            .ToList();
+
+        return Ok(new { @class, section, mode, from, to, rows });
+    }
+
+    // ── GET /api/attendance/reports/period-breakdown ──────────────────────
+    // Period-mode only: absentee counts per period across the date range.
+    [HttpGet("reports/period-breakdown")]
+    [RequirePrivilege("attendance:report")]
+    public async Task<IActionResult> PeriodBreakdown(
+        [FromQuery] string? @class, [FromQuery] string? section,
+        [FromQuery] DateOnly? from, [FromQuery] DateOnly? to, [FromQuery] string? subject,
+        CancellationToken ct = default)
+    {
+        if (string.IsNullOrEmpty(@class) || string.IsNullOrEmpty(section))
+            return BadRequest(new { error = "class and section required" });
+
+        var q = _db.Attendance.AsNoTracking()
+            .Where(a => a.Class == @class && a.Section == section && a.Mode == AttendanceMode.Period);
+        if (from is { } f) q = q.Where(a => a.Date >= f);
+        if (to is { } t) q = q.Where(a => a.Date <= t);
+        if (!string.IsNullOrEmpty(subject)) q = q.Where(a => a.Subject == subject);
+
+        var grouped = await q
+            .GroupBy(a => new { a.Period, a.Status })
+            .Select(g => new { g.Key.Period, g.Key.Status, Count = g.Count() })
+            .ToListAsync(ct);
+
+        var rows = grouped
+            .GroupBy(x => x.Period)
+            .OrderBy(g => g.Key)
+            .Select(g =>
+            {
+                var c = g.ToDictionary(x => x.Status, x => x.Count);
+                int present = c.GetValueOrDefault(AttendanceStatus.Present);
+                int absent = c.GetValueOrDefault(AttendanceStatus.Absent);
+                int late = c.GetValueOrDefault(AttendanceStatus.Late);
+                int leave = c.GetValueOrDefault(AttendanceStatus.Leave);
+                int holiday = c.GetValueOrDefault(AttendanceStatus.Holiday);
+                var total = present + absent + late + leave;
+                return new
+                {
+                    period = g.Key, present, absent, late, leave, holiday, total,
+                    percentage = total == 0 ? 0d : Math.Round((present + late) / (double)total * 1000) / 10,
+                };
+            })
+            .ToList();
+
+        return Ok(new { @class, section, mode = "period", from, to, rows });
     }
 
     // ── shared: teacher-assignment gate (canMarkClass) ────────────────────
