@@ -12,6 +12,7 @@ using Microsoft.IdentityModel.Tokens;
 using Npgsql;
 using QMSoft.Api.Domain.Entities;
 using QMSoft.Api.Authorization;
+using QMSoft.Api.Common;
 using QMSoft.Api.Data;
 using QMSoft.Api.Infrastructure;
 using QMSoft.Api.Infrastructure.Auth;
@@ -242,8 +243,13 @@ builder.Services.AddAuthorization();
 builder.Services
     .AddControllers(o =>
     {
-        // Reject unknown query/body shapes loudly rather than binding defaults.
-        o.SuppressImplicitRequiredAttributeForNonNullableReferenceTypes = false;
+        // MUST be true. With <Nullable>enable</Nullable>, `false` promotes EVERY
+        // non-nullable property to a required body field — including entity
+        // properties the client has no reason to send (Student.shareEnabled,
+        // Student.isDeleted, Exam.weightInFinal, School.createdAt…). Because
+        // controllers bind entities directly, that turned ordinary saves into
+        // 400s. Absent field → CLR default; FluentValidation is the real gate.
+        o.SuppressImplicitRequiredAttributeForNonNullableReferenceTypes = true;
     })
     .AddJsonOptions(o =>
     {
@@ -258,6 +264,35 @@ builder.Services
         // every rupee display in the app. This is the default; do NOT add a
         // string converter.
     });
+
+// [ApiController] short-circuits with RFC7807 ProblemDetails BEFORE any
+// middleware runs, so model-binding failures never reached
+// ExceptionHandlingMiddleware and arrived at the client as
+// { title, errors:{...} } with no `error`/`code` key — surfacing in the app as
+// a bare "HTTP 400". Reshape them into the documented envelope instead.
+builder.Services.Configure<Microsoft.AspNetCore.Mvc.ApiBehaviorOptions>(o =>
+{
+    o.InvalidModelStateResponseFactory = ctx =>
+    {
+        var details = ctx.ModelState
+            .Where(kv => kv.Value is { Errors.Count: > 0 })
+            .Select(kv => new
+            {
+                field = kv.Key.StartsWith("$.", StringComparison.Ordinal) ? kv.Key[2..] : kv.Key,
+                message = kv.Value!.Errors[0].ErrorMessage is { Length: > 0 } m
+                    ? m
+                    : "Invalid value.",
+            })
+            .ToList();
+
+        return new Microsoft.AspNetCore.Mvc.BadRequestObjectResult(new
+        {
+            error = "Validation failed",
+            code = ErrorCodes.ValidationError,
+            details,
+        });
+    };
+});
 
 builder.Services.AddFluentValidationAutoValidation();
 builder.Services.AddValidatorsFromAssembly(typeof(Program).Assembly);
