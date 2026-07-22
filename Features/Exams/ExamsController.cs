@@ -44,8 +44,16 @@ public sealed class ExamsController : ControllerBase
     {
         var missing = new List<object>();
         if (string.IsNullOrWhiteSpace(req.Name))  missing.Add(new { field = "name",  message = "Exam name is required." });
-        if (req.Type is null)                     missing.Add(new { field = "type",  message = "Exam type is required." });
         if (string.IsNullOrWhiteSpace(req.Class)) missing.Add(new { field = "class", message = "Class is required." });
+
+        if (!EnumWireParse.TryOptional<ExamType>(req.Type, out var examType))
+            missing.Add(new { field = "type", message = $"Must be one of: {EnumWireParse.Allowed<ExamType>()}." });
+        else if (examType is null)
+            missing.Add(new { field = "type", message = "Exam type is required." });
+
+        if (!EnumWireParse.TryOptional<ExamStatus>(req.Status, out var examStatus))
+            missing.Add(new { field = "status", message = $"Must be one of: {EnumWireParse.Allowed<ExamStatus>()}." });
+
         if (missing.Count > 0)
             return BadRequest(new { error = "Validation failed", code = ErrorCodes.ValidationError, details = missing });
 
@@ -54,7 +62,7 @@ public sealed class ExamsController : ControllerBase
         var body = new Exam
         {
             Name = req.Name!.Trim(),
-            Type = req.Type!.Value,
+            Type = examType!.Value,
             Class = req.Class!.Trim(),
             Section = string.IsNullOrWhiteSpace(req.Section) ? null : req.Section.Trim(),
             FromDate = req.FromDate ?? today,
@@ -66,7 +74,7 @@ public sealed class ExamsController : ControllerBase
 
             GradingScaleId = req.GradingScaleId,
             Notes = req.Notes,
-            Status = req.Status ?? ExamStatus.Draft,
+            Status = examStatus ?? ExamStatus.Draft,
         };
 
         body.AcademicYear = await ResolveAcademicYearAsync(req.AcademicYear, ct);
@@ -102,13 +110,21 @@ public sealed class ExamsController : ControllerBase
         var e = await _db.Exams.Include(x => x.Subjects).FirstOrDefaultAsync(x => x.Id == id, ct);
         if (e is null) return NotFound(new { error = "Not found" });
 
+        var bad = new List<object>();
+        if (!EnumWireParse.TryOptional<ExamType>(req.Type, out var t))
+            bad.Add(new { field = "type", message = $"Must be one of: {EnumWireParse.Allowed<ExamType>()}." });
+        if (!EnumWireParse.TryOptional<ExamStatus>(req.Status, out var newStatus))
+            bad.Add(new { field = "status", message = $"Must be one of: {EnumWireParse.Allowed<ExamStatus>()}." });
+        if (bad.Count > 0)
+            return BadRequest(new { error = "Validation failed", code = ErrorCodes.ValidationError, details = bad });
+
         // Meta only — subjects are create-time, unchanged from before.
         if (!string.IsNullOrWhiteSpace(req.Name)) e.Name = req.Name.Trim();
-        if (req.Type is { } t) e.Type = t;
+        if (t is { } tv) e.Type = tv;
         if (req.FromDate is { } fd) e.FromDate = fd;
         if (req.ToDate is { } td) e.ToDate = td;
         if (req.WeightInFinal is { } w) e.WeightInFinal = w;
-        if (req.Status is { } st) e.Status = st;
+        if (newStatus is { } st) e.Status = st;
         e.GradingScaleId = req.GradingScaleId;
         e.Section = string.IsNullOrWhiteSpace(req.Section) ? null : req.Section.Trim();
         e.Notes = req.Notes;
