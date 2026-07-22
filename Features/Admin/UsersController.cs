@@ -216,17 +216,30 @@ public sealed class SchoolsController : ControllerBase
 
     [HttpPut("{id:guid}")]
     [RequirePrivilege("school:settings")]
-    public async Task<IActionResult> Update(Guid id, [FromBody] School body, CancellationToken ct)
+    public async Task<IActionResult> Update(Guid id, [FromBody] SchoolUpdateRequest req, CancellationToken ct)
     {
         if (!_tenant.IsSuperAdmin && _tenant.SchoolId != id) return StatusCode(403, new { error = "Forbidden" });
         var s = await _db.Schools.IgnoreQueryFilters().FirstOrDefaultAsync(x => x.Id == id, ct);
         if (s is null) return NotFound(new { error = "Not found" });
-        s.Name = body.Name; s.Email = body.Email; s.Phone = body.Phone;
-        s.City = body.City; s.State = body.State; s.Pincode = body.Pincode;
-        s.AcademicYear = body.AcademicYear; s.PrimaryColor = body.PrimaryColor;
-        s.Classes = body.Classes; s.Sections = body.Sections; s.WorkingDays = body.WorkingDays;
-        s.FeeBillingDay = body.FeeBillingDay; s.FeeReminderDay = body.FeeReminderDay;
-        s.LeaveRequireApproval = body.LeaveRequireApproval;
+
+        // Only assign what the client actually sent. Previously an omitted
+        // field arrived as the CLR default and silently blanked the column —
+        // e.g. a settings save with no `classes` wiped the class list, and
+        // feeBillingDay reset to 0. Slug/plan/isActive are not editable here.
+        if (!string.IsNullOrWhiteSpace(req.Name)) s.Name = req.Name.Trim();
+        if (req.Email is not null) s.Email = req.Email;
+        if (req.Phone is not null) s.Phone = req.Phone;
+        if (req.City is not null) s.City = req.City;
+        if (req.State is not null) s.State = req.State;
+        if (req.Pincode is not null) s.Pincode = req.Pincode;
+        if (!string.IsNullOrWhiteSpace(req.AcademicYear)) s.AcademicYear = req.AcademicYear.Trim();
+        if (!string.IsNullOrWhiteSpace(req.PrimaryColor)) s.PrimaryColor = req.PrimaryColor.Trim();
+        if (req.Classes is not null) s.Classes = req.Classes;
+        if (req.Sections is not null) s.Sections = req.Sections;
+        if (req.WorkingDays is not null) s.WorkingDays = req.WorkingDays;
+        if (req.FeeBillingDay is { } fbd) s.FeeBillingDay = fbd;
+        if (req.FeeReminderDay is { } frd) s.FeeReminderDay = frd;
+        if (req.LeaveRequireApproval is { } lra) s.LeaveRequireApproval = lra;
         await _db.SaveChangesAsync(ct);
         await _audit.WriteAsync("school.update", "school", id.ToString(), ct: ct);
         return Ok(s);
