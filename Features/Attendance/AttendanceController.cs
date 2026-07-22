@@ -141,7 +141,7 @@ public sealed class AttendanceController : ControllerBase
 
                 if (existing is null)
                 {
-                    _db.Attendance.Add(new Attendance
+                    _db.Attendance.Add(new Domain.Entities.Attendance
                     {
                         SchoolId = _tenant.SchoolId ?? Guid.Empty,
                         StudentId = e.StudentId,
