@@ -195,11 +195,27 @@ public sealed class StudentsController : ControllerBase
 
     [HttpPost]
     [RequirePrivilege("student:create")]
-    public async Task<IActionResult> Create([FromBody] Student body, CancellationToken ct)
+    public async Task<IActionResult> Create([FromBody] StudentWriteRequest req, CancellationToken ct)
     {
+        // Required fields are checked HERE, not by the model binder, so failures
+        // come back in the { error, code, details[] } envelope the app parses.
+        var missing = new List<object>();
+        if (string.IsNullOrWhiteSpace(req.FirstName))   missing.Add(new { field = "firstName",   message = "First name is required." });
+        if (string.IsNullOrWhiteSpace(req.AdmissionNo)) missing.Add(new { field = "admissionNo", message = "Admission number is required." });
+        if (string.IsNullOrWhiteSpace(req.Class))       missing.Add(new { field = "class",       message = "Class is required." });
+        if (string.IsNullOrWhiteSpace(req.Section))     missing.Add(new { field = "section",     message = "Section is required." });
+        if (missing.Count > 0)
+            return BadRequest(new { error = "Validation failed", code = ErrorCodes.ValidationError, details = missing });
+
+        var body = new Student();
+        ApplyWrite(body, req, isCreate: true);
+
         // Tenant stamped by SaveChanges; academicYear resolved from school default.
         body.SchoolId = _tenant.SchoolId ?? Guid.Empty;
-        body.AcademicYear = await ResolveAcademicYearAsync(body.AcademicYear, ct);
+        body.AcademicYear = await ResolveAcademicYearAsync(req.AcademicYear, ct);
+
+        // NOT NULL in the schema; the form may legitimately omit it.
+        body.AdmissionDate = req.AdmissionDate ?? DateOnly.FromDateTime(DateTime.UtcNow);
 
         _db.Students.Add(body);
         await _db.SaveChangesAsync(ct);
@@ -238,7 +254,7 @@ public sealed class StudentsController : ControllerBase
 
     [HttpPut("{id:guid}")]
     [RequirePrivilege("student:update")]
-    public async Task<IActionResult> Update(Guid id, [FromBody] Student body, CancellationToken ct)
+    public async Task<IActionResult> Update(Guid id, [FromBody] StudentWriteRequest req, CancellationToken ct)
     {
         var s = await _db.Students
             .Include(x => x.Siblings).Include(x => x.PassedExams)
@@ -246,7 +262,7 @@ public sealed class StudentsController : ControllerBase
         if (s is null) return NotFound(new { error = "Not found" });
 
         // Copy mutable fields; blank academicYear is ignored (Node deletes it).
-        ApplyUpdate(s, body);
+        ApplyWrite(s, req, isCreate: false);
         await _db.SaveChangesAsync(ct);
         await _audit.WriteAsync("student.update", "student", s.Id.ToString(), ct: ct);
 
@@ -304,7 +320,7 @@ public sealed class StudentsController : ControllerBase
 
     // ── POST /api/students/bulk-import ────────────────────────────────────
 
-    public sealed record BulkImportRequest(List<Student>? Students);
+    public sealed record BulkImportRequest(List<StudentWriteRequest>? Students);
 
     [HttpPost("bulk-import")]
     [RequirePrivilege("student:create")]
@@ -322,23 +338,27 @@ public sealed class StudentsController : ControllerBase
 
         for (var i = 0; i < rows.Count; i++)
         {
-            var row = rows[i];
-            if (string.IsNullOrEmpty(row.AdmissionNo) || string.IsNullOrEmpty(row.FirstName) ||
-                string.IsNullOrEmpty(row.Class) || string.IsNullOrEmpty(row.Section))
+            var src = rows[i];
+            if (string.IsNullOrEmpty(src.AdmissionNo) || string.IsNullOrEmpty(src.FirstName) ||
+                string.IsNullOrEmpty(src.Class) || string.IsNullOrEmpty(src.Section))
             {
                 errors.Add(new { row = i + 1, error = "Missing required fields" }); skipped++; continue;
             }
 
             var dup = await _db.Students.AsNoTracking()
-                .AnyAsync(s => s.AdmissionNo == row.AdmissionNo, ct);
+                .AnyAsync(s => s.AdmissionNo == src.AdmissionNo, ct);
             if (dup)
             {
-                errors.Add(new { row = i + 1, admissionNo = row.AdmissionNo, error = "Duplicate admission no" });
+                errors.Add(new { row = i + 1, admissionNo = src.AdmissionNo, error = "Duplicate admission no" });
                 skipped++; continue;
             }
 
+            var row = new Student();
+            ApplyWrite(row, src, isCreate: true);
             row.SchoolId = _tenant.SchoolId ?? Guid.Empty;
             if (string.IsNullOrEmpty(row.AcademicYear)) row.AcademicYear = defaultYear;
+            row.AdmissionDate = src.AdmissionDate ?? DateOnly.FromDateTime(DateTime.UtcNow);
+
             _db.Students.Add(row);
             try { await _db.SaveChangesAsync(ct); created++; }
             catch (Exception e) { _db.Entry(row).State = EntityState.Detached; errors.Add(new { row = i + 1, error = e.Message }); skipped++; }
@@ -458,48 +478,81 @@ public sealed class StudentsController : ControllerBase
         return json;
     }
 
-    /// <summary>Copies editable fields onto the tracked entity; blank
-    /// academicYear ignored (Node deletes it from the $set). Snapshot/system
-    /// fields (share token, isDeleted, timestamps) are never overwritten here.</summary>
-    private void ApplyUpdate(Student s, Student b)
+    /// <summary>
+    /// Copies client-supplied fields from the DTO onto the tracked entity.
+    ///
+    /// Semantics preserved from the previous ApplyUpdate:
+    ///   • blank academicYear is ignored (Node deleted it from the $set)
+    ///   • child collections are replace-all ONLY when the client sent the
+    ///     array; null = "not editing these", empty = "clear them"
+    ///   • system fields (share token, isDeleted, timestamps, schoolId, _id)
+    ///     are never written here — they have no DTO property at all now.
+    ///
+    /// On create, `isCreate` lets admissionNo through; it is immutable
+    /// afterwards (it is the reserved key a deactivated student keeps).
+    /// </summary>
+    private void ApplyWrite(Student s, StudentWriteRequest b, bool isCreate)
     {
-        s.RollNo = b.RollNo; s.FirstName = b.FirstName; s.LastName = b.LastName;
+        if (isCreate && b.AdmissionNo is not null) s.AdmissionNo = b.AdmissionNo.Trim();
+
+        if (b.FirstName is not null) s.FirstName = b.FirstName.Trim();
+        if (b.Class is not null) s.Class = b.Class.Trim();
+        if (b.Section is not null) s.Section = b.Section.Trim();
+
+        s.RollNo = b.RollNo; s.LastName = b.LastName;
         s.FirstNameHi = b.FirstNameHi; s.LastNameHi = b.LastNameHi;
         s.Dob = b.Dob; s.Gender = b.Gender; s.BloodGroup = b.BloodGroup;
-        s.Class = b.Class; s.Section = b.Section;
+
         if (!string.IsNullOrWhiteSpace(b.AcademicYear)) s.AcademicYear = b.AcademicYear;
+        if (!isCreate && b.AdmissionDate is { } ad) s.AdmissionDate = ad;
+
         s.Address = b.Address; s.City = b.City; s.State = b.State; s.Pincode = b.Pincode;
         s.Phone = b.Phone; s.Email = b.Email;
-        s.FatherName = b.FatherName; s.FatherPhone = b.FatherPhone; s.FatherOccup = b.FatherOccup;
-        s.MotherName = b.MotherName; s.MotherPhone = b.MotherPhone; s.MotherOccup = b.MotherOccup;
+        s.FatherName = b.FatherName; s.FatherNameHi = b.FatherNameHi;
+        s.FatherPhone = b.FatherPhone; s.FatherOccup = b.FatherOccup;
+        s.MotherName = b.MotherName; s.MotherNameHi = b.MotherNameHi;
+        s.MotherPhone = b.MotherPhone; s.MotherOccup = b.MotherOccup;
         s.GuardianName = b.GuardianName; s.GuardianPhone = b.GuardianPhone; s.GuardianRel = b.GuardianRel;
         s.Category = b.Category; s.Caste = b.Caste; s.Religion = b.Religion;
-        s.MotherTongue = b.MotherTongue; s.Nationality = b.Nationality;
-        s.TransportMode = b.TransportMode; s.BusRoute = b.BusRoute; s.PickupPoint = b.PickupPoint;
-        s.House = b.House; s.Status = b.Status;
-        s.AadharNo = b.AadharNo; s.BirthCertNo = b.BirthCertNo;
-        s.PrevSchool = b.PrevSchool; s.PrevClass = b.PrevClass;
-        s.TcNo = b.TcNo; s.TcDate = b.TcDate;
+        s.MotherTongue = b.MotherTongue;
 
-        // Child collections: replace-all only when the client actually sent the
-        // array. A missing/null array means "not editing these" (leave as-is);
-        // an empty array means "clear them". Matches the mobile/web form, which
-        // always sends the full current list when the section is touched.
+        // Entity default is "Indian" — do not let an omitted field blank it.
+        if (b.Nationality is not null) s.Nationality = b.Nationality;
+
+        s.TransportMode = b.TransportMode; s.BusRoute = b.BusRoute; s.PickupPoint = b.PickupPoint;
+        s.House = b.House; s.PhotoUrl = b.PhotoUrl; s.Notes = b.Notes;
+
+        if (b.Status is { } st) s.Status = st;
+
+        // AadharNo's setter masks to XXXXXXXX1234 — the DPDP control lives on
+        // the entity, so assigning through it here keeps that guarantee.
+        s.AadharNo = b.AadharNo;
+        s.AadharDoc = b.AadharDoc; s.AadharDocKey = b.AadharDocKey;
+        s.BirthCertNo = b.BirthCertNo; s.BirthDoc = b.BirthDoc; s.BirthDocKey = b.BirthDocKey;
+
+        s.PrevSchool = b.PrevSchool; s.PrevClass = b.PrevClass;
+        s.TcNo = b.TcNo; s.TcDate = b.TcDate; s.TcDoc = b.TcDoc; s.TcDocKey = b.TcDocKey;
+
         if (b.Siblings is not null)
         {
-            _db.StudentSiblings.RemoveRange(s.Siblings);
+            if (!isCreate) _db.StudentSiblings.RemoveRange(s.Siblings);
             s.Siblings = b.Siblings.Select(x => new StudentSibling
             {
-                Name = x.Name, Class = x.Class, Relation = x.Relation, SameSchool = x.SameSchool,
+                Name = x.Name,
+                Class = x.Class,
+                Relation = x.Relation,
+                SameSchool = x.SameSchool ?? true,
             }).ToList();
         }
+
         if (b.PassedExams is not null)
         {
-            _db.StudentPassedExams.RemoveRange(s.PassedExams);
+            if (!isCreate) _db.StudentPassedExams.RemoveRange(s.PassedExams);
             s.PassedExams = b.PassedExams.Select(x => new StudentPassedExam
             {
                 ExamName = x.ExamName, Institution = x.Institution, Year = x.Year,
-                RollNo = x.RollNo, Board = x.Board, MaxMarks = x.MaxMarks, ObtainedMarks = x.ObtainedMarks,
+                RollNo = x.RollNo, Board = x.Board,
+                MaxMarks = x.MaxMarks, ObtainedMarks = x.ObtainedMarks,
             }).ToList();
         }
     }
