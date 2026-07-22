@@ -43,8 +43,37 @@ public sealed class PollsController : ControllerBase
 
     [HttpPost]
     // Node gated poll writes on authenticate only (no privilege) — match that.
-    public async Task<IActionResult> Create([FromBody] Poll body, CancellationToken ct)
+    public async Task<IActionResult> Create([FromBody] PollWriteRequest req, CancellationToken ct)
     {
+        if (string.IsNullOrWhiteSpace(req.Title))
+            return BadRequest(new
+            {
+                error = "Validation failed",
+                code = ErrorCodes.ValidationError,
+                details = new[] { new { field = "title", message = "Title is required." } },
+            });
+
+        var body = new Poll
+        {
+            Title = req.Title.Trim(),
+            Description = req.Description,
+            Category = req.Category ?? PollCategory.General,
+            Status = req.Status ?? PollStatus.Draft,
+            StartDate = req.StartDate,
+            EndDate = req.EndDate,
+            ShowResultsBeforeClose = req.ShowResultsBeforeClose ?? true,
+            AllowAnonymous = req.AllowAnonymous ?? false,
+        };
+        if (req.TargetRoles is { Count: > 0 }) body.TargetRoles = req.TargetRoles;
+
+        foreach (var q in req.Questions ?? [])
+        {
+            var pq = new PollQuestion { Text = q.Text ?? "" };
+            foreach (var o in q.Options ?? [])
+                pq.Options.Add(new PollOption { Text = o.Text ?? "" });
+            body.Questions.Add(pq);
+        }
+
         body.SchoolId = _tenant.SchoolId ?? Guid.Empty;
         body.CreatedByUserId = _tenant.UserId;
         body.Validate();                                  // ≥1 question, ≥2 options each
@@ -56,14 +85,21 @@ public sealed class PollsController : ControllerBase
 
     [HttpPut("{id:guid}")]
     // Node gated poll writes on authenticate only (no privilege) — match that.
-    public async Task<IActionResult> Update(Guid id, [FromBody] Poll body, CancellationToken ct)
+    public async Task<IActionResult> Update(Guid id, [FromBody] PollWriteRequest req, CancellationToken ct)
     {
         var p = await _db.Polls.Include(x => x.Questions).FirstOrDefaultAsync(x => x.Id == id, ct);
         if (p is null) return NotFound(new { error = "Not found" });
-        p.Title = body.Title; p.Description = body.Description; p.Category = body.Category;
-        p.TargetRoles = body.TargetRoles; p.Status = body.Status;
-        p.StartDate = body.StartDate; p.EndDate = body.EndDate;
-        p.ShowResultsBeforeClose = body.ShowResultsBeforeClose; p.AllowAnonymous = body.AllowAnonymous;
+
+        // Meta only — questions/options are not edited through this route
+        // (votes reference option ids; rewriting them would orphan ballots).
+        if (!string.IsNullOrWhiteSpace(req.Title)) p.Title = req.Title.Trim();
+        if (req.Category is { } cat) p.Category = cat;
+        if (req.Status is { } st) p.Status = st;
+        if (req.TargetRoles is { Count: > 0 }) p.TargetRoles = req.TargetRoles;
+        if (req.ShowResultsBeforeClose is { } sr) p.ShowResultsBeforeClose = sr;
+        if (req.AllowAnonymous is { } aa) p.AllowAnonymous = aa;
+        p.Description = req.Description;
+        p.StartDate = req.StartDate; p.EndDate = req.EndDate;
         await _db.SaveChangesAsync(ct);
         return Ok(p);
     }
@@ -296,8 +332,32 @@ public sealed class ClassTeachersController : ControllerBase
 
     [HttpPost]
     [RequirePrivilege("teacher:manage")]
-    public async Task<IActionResult> Create([FromBody] ClassTeacher body, CancellationToken ct)
+    public async Task<IActionResult> Create([FromBody] ClassTeacherWriteRequest req, CancellationToken ct)
     {
+        var missing = new List<object>();
+        if (req.TeacherUserId is null)             missing.Add(new { field = "teacherUserId", message = "Teacher is required." });
+        if (string.IsNullOrWhiteSpace(req.Class))  missing.Add(new { field = "class",         message = "Class is required." });
+        if (string.IsNullOrWhiteSpace(req.Section))missing.Add(new { field = "section",       message = "Section is required." });
+        if (missing.Count > 0)
+            return BadRequest(new { error = "Validation failed", code = ErrorCodes.ValidationError, details = missing });
+
+        var academicYear = req.AcademicYear;
+        if (string.IsNullOrWhiteSpace(academicYear))
+            academicYear = await _db.Schools.AsNoTracking()
+                .Where(x => x.Id == _tenant.SchoolId).Select(x => x.AcademicYear)
+                .FirstOrDefaultAsync(ct) ?? "";
+
+        var body = new ClassTeacher
+        {
+            TeacherUserId = req.TeacherUserId!.Value,
+            AcademicYear = academicYear,
+            Class = req.Class!.Trim(),
+            Section = req.Section!.Trim(),
+            Subject = string.IsNullOrWhiteSpace(req.Subject) ? null : req.Subject.Trim(),
+            IsPrimary = req.IsPrimary ?? true,
+            IsActive = req.IsActive ?? true,
+        };
+
         body.SchoolId = _tenant.SchoolId ?? Guid.Empty;
         _db.ClassTeachers.Add(body);
         await _db.SaveChangesAsync(ct);
