@@ -27,7 +27,7 @@ public sealed class AttendanceController : ControllerBase
     [RequirePrivilege("attendance:view")]
     public async Task<IActionResult> Roster(
         [FromQuery] string? @class, [FromQuery] string? section, [FromQuery] DateOnly? date,
-        [FromQuery] string mode = "daily", [FromQuery] int? period, [FromQuery] string? subject,
+        [FromQuery] string mode = "daily", [FromQuery] int? period = null, [FromQuery] string? subject = null,
         CancellationToken ct = default)
     {
         if (string.IsNullOrEmpty(@class) || string.IsNullOrEmpty(section))
@@ -346,7 +346,8 @@ public sealed class AttendanceController : ControllerBase
     public async Task<IActionResult> Trends(
         [FromQuery] string? @class, [FromQuery] string? section,
         [FromQuery] DateOnly? from, [FromQuery] DateOnly? to,
-        [FromQuery] string mode = "daily", [FromQuery] int? period, [FromQuery] string? subject,
+        [FromQuery] int? period, [FromQuery] string? subject,
+        [FromQuery] string mode = "daily",
         CancellationToken ct = default)
     {
         if (string.IsNullOrEmpty(@class) || string.IsNullOrEmpty(section))
