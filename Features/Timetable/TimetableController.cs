@@ -1,6 +1,7 @@
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.EntityFrameworkCore;
 using QMSoft.Api.Authorization;
+using QMSoft.Api.Common;
 using QMSoft.Api.Data;
 using QMSoft.Api.Domain.Entities;
 using QMSoft.Api.Infrastructure.Tenancy;
@@ -31,8 +32,31 @@ public sealed class TimetableController : ControllerBase
 
     [HttpPost]
     [RequirePrivilege("timetable:manage")]
-    public async Task<IActionResult> Create([FromBody] Domain.Entities.Timetable body, CancellationToken ct)
+    public async Task<IActionResult> Create([FromBody] TimetableWriteRequest req, CancellationToken ct)
     {
+        var missing = new List<object>();
+        if (string.IsNullOrWhiteSpace(req.Class))   missing.Add(new { field = "class",   message = "Class is required." });
+        if (string.IsNullOrWhiteSpace(req.Section)) missing.Add(new { field = "section", message = "Section is required." });
+        if (missing.Count > 0)
+            return BadRequest(new { error = "Validation failed", code = ErrorCodes.ValidationError, details = missing });
+
+        var academicYear = req.AcademicYear;
+        if (string.IsNullOrWhiteSpace(academicYear))
+            academicYear = await _db.Schools.AsNoTracking()
+                .Where(x => x.Id == _tenant.SchoolId).Select(x => x.AcademicYear)
+                .FirstOrDefaultAsync(ct) ?? "";
+
+        var body = new Domain.Entities.Timetable
+        {
+            Class = req.Class!.Trim(),
+            Section = req.Section!.Trim(),
+            AcademicYear = academicYear,
+            // NOT NULL column; the form may omit it.
+            FromDate = req.FromDate ?? DateOnly.FromDateTime(DateTime.UtcNow),
+            ToDate = req.ToDate,
+            Term = string.IsNullOrWhiteSpace(req.Term) ? null : req.Term.Trim(),
+        };
+
         body.SchoolId = _tenant.SchoolId ?? Guid.Empty;
         _db.Timetables.Add(body);
         await _db.SaveChangesAsync(ct);
@@ -42,12 +66,16 @@ public sealed class TimetableController : ControllerBase
 
     [HttpPut("{id:guid}")]
     [RequirePrivilege("timetable:manage")]
-    public async Task<IActionResult> Update(Guid id, [FromBody] Domain.Entities.Timetable body, CancellationToken ct)
+    public async Task<IActionResult> Update(Guid id, [FromBody] TimetableWriteRequest req, CancellationToken ct)
     {
         var t = await _db.Timetables.FirstOrDefaultAsync(x => x.Id == id, ct);
         if (t is null) return NotFound(new { error = "Not found" });
-        t.Class = body.Class; t.Section = body.Section; t.AcademicYear = body.AcademicYear;
-        t.FromDate = body.FromDate; t.ToDate = body.ToDate; t.Term = body.Term;
+        if (!string.IsNullOrWhiteSpace(req.Class)) t.Class = req.Class.Trim();
+        if (!string.IsNullOrWhiteSpace(req.Section)) t.Section = req.Section.Trim();
+        if (!string.IsNullOrWhiteSpace(req.AcademicYear)) t.AcademicYear = req.AcademicYear.Trim();
+        if (req.FromDate is { } fd) t.FromDate = fd;
+        t.ToDate = req.ToDate;
+        t.Term = string.IsNullOrWhiteSpace(req.Term) ? null : req.Term.Trim();
         await _db.SaveChangesAsync(ct);
         return Ok(t);
     }
