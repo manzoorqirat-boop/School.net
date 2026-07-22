@@ -60,6 +60,7 @@ public sealed class AuthController : ControllerBase
         // schoolSlug → tenant; absent slug = superadmin login (schoolId NULL).
         Guid? schoolId = null;
         string? schoolSlug = null;
+        School? schoolEntity = null;
         if (!string.IsNullOrEmpty(req.SchoolSlug))
         {
             var school = await _db.Schools
@@ -71,6 +72,7 @@ public sealed class AuthController : ControllerBase
 
             schoolId = school.Id;
             schoolSlug = school.Slug;
+            schoolEntity = school;
         }
 
         // Unauthenticated ⇒ query filter is active with no tenant ⇒ matches
@@ -105,6 +107,13 @@ public sealed class AuthController : ControllerBase
             tokenType = "Bearer",
             token = pair.AccessToken,            // legacy field — api.ts reads either
             user = ToSafeJson(user),
+
+            // auth.tsx does `setSession(token, res.user, res.school, …)` and
+            // then `setSchool(res.school ?? null)`. Without this field the
+            // client stored school = null, so every `school._id` read was
+            // undefined — school-setup PUT went to /api/schools/undefined and
+            // 404'd. Superadmin logs in without a slug, so this is null there.
+            school = schoolEntity,
         });
     }
 
@@ -201,7 +210,14 @@ public sealed class AuthController : ControllerBase
     public async Task<IActionResult> Me(CancellationToken ct)
     {
         var user = await CurrentUserAsync(ct);
-        return Ok(new { user = user is null ? null : ToSafeJson(user) });
+
+        // Also return the school so a session created before login included it
+        // can self-heal on the next /me call, without forcing a re-login.
+        School? school = null;
+        if (_tenant.SchoolId is { } sid)
+            school = await _db.Schools.AsNoTracking().FirstOrDefaultAsync(x => x.Id == sid, ct);
+
+        return Ok(new { user = user is null ? null : ToSafeJson(user), school });
     }
 
     [HttpPost("verify")]
