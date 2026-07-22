@@ -40,8 +40,54 @@ public sealed class ExamsController : ControllerBase
 
     [HttpPost]
     [RequirePrivilege("exam:create")]
-    public async Task<IActionResult> Create([FromBody] Exam body, CancellationToken ct)
+    public async Task<IActionResult> Create([FromBody] ExamWriteRequest req, CancellationToken ct)
     {
+        var missing = new List<object>();
+        if (string.IsNullOrWhiteSpace(req.Name))  missing.Add(new { field = "name",  message = "Exam name is required." });
+        if (req.Type is null)                     missing.Add(new { field = "type",  message = "Exam type is required." });
+        if (string.IsNullOrWhiteSpace(req.Class)) missing.Add(new { field = "class", message = "Class is required." });
+        if (missing.Count > 0)
+            return BadRequest(new { error = "Validation failed", code = ErrorCodes.ValidationError, details = missing });
+
+        var today = DateOnly.FromDateTime(DateTime.UtcNow);
+
+        var body = new Exam
+        {
+            Name = req.Name!.Trim(),
+            Type = req.Type!.Value,
+            Class = req.Class!.Trim(),
+            Section = string.IsNullOrWhiteSpace(req.Section) ? null : req.Section.Trim(),
+            FromDate = req.FromDate ?? today,
+            ToDate = req.ToDate ?? req.FromDate ?? today,
+
+            // Omitted by the mobile create form — 0 means "no rollup weight",
+            // which is the correct default, not a validation error.
+            WeightInFinal = req.WeightInFinal ?? 0m,
+
+            GradingScaleId = req.GradingScaleId,
+            Notes = req.Notes,
+            Status = req.Status ?? ExamStatus.Draft,
+        };
+
+        body.AcademicYear = await ResolveAcademicYearAsync(req.AcademicYear, ct);
+
+        foreach (var sub in req.Subjects ?? [])
+        {
+            if (sub.SubjectId is not { } sid) continue;
+            body.Subjects.Add(new ExamSubject
+            {
+                SubjectId = sid,
+                SubjectName = sub.SubjectName ?? "",
+                MaxMarks = sub.MaxMarks ?? 100m,
+                PassingMark = sub.PassingMark,
+                TheoryMax = sub.TheoryMax,
+                PracticalMax = sub.PracticalMax,
+                ExamDate = sub.ExamDate,
+                StartTime = sub.StartTime,
+                DurationMins = sub.DurationMins,
+            });
+        }
+
         body.SchoolId = _tenant.SchoolId ?? Guid.Empty;
         _db.Exams.Add(body);
         await _db.SaveChangesAsync(ct);
@@ -51,13 +97,21 @@ public sealed class ExamsController : ControllerBase
 
     [HttpPut("{id:guid}")]
     [RequirePrivilege("exam:create")]
-    public async Task<IActionResult> Update(Guid id, [FromBody] Exam body, CancellationToken ct)
+    public async Task<IActionResult> Update(Guid id, [FromBody] ExamWriteRequest req, CancellationToken ct)
     {
         var e = await _db.Exams.Include(x => x.Subjects).FirstOrDefaultAsync(x => x.Id == id, ct);
         if (e is null) return NotFound(new { error = "Not found" });
-        e.Name = body.Name; e.Type = body.Type; e.FromDate = body.FromDate; e.ToDate = body.ToDate;
-        e.WeightInFinal = body.WeightInFinal; e.GradingScaleId = body.GradingScaleId;
-        e.Section = body.Section; e.Notes = body.Notes;
+
+        // Meta only — subjects are create-time, unchanged from before.
+        if (!string.IsNullOrWhiteSpace(req.Name)) e.Name = req.Name.Trim();
+        if (req.Type is { } t) e.Type = t;
+        if (req.FromDate is { } fd) e.FromDate = fd;
+        if (req.ToDate is { } td) e.ToDate = td;
+        if (req.WeightInFinal is { } w) e.WeightInFinal = w;
+        if (req.Status is { } st) e.Status = st;
+        e.GradingScaleId = req.GradingScaleId;
+        e.Section = string.IsNullOrWhiteSpace(req.Section) ? null : req.Section.Trim();
+        e.Notes = req.Notes;
         await _db.SaveChangesAsync(ct);
         await _audit.WriteAsync("exam.update", "exam", id.ToString(), ct: ct);
         return Ok(e);
@@ -181,5 +235,22 @@ public sealed class ExamsController : ControllerBase
     {
         var items = await _db.ExamResults.AsNoTracking().Where(r => r.ExamId == id).ToListAsync(ct);
         return Ok(new { items, count = items.Count });
+    }
+
+    /// <summary>Falls back to the school's current academic year when the
+    /// client omits it — the mobile create form does not send it.</summary>
+    private async Task<string> ResolveAcademicYearAsync(string? bodyValue, CancellationToken ct)
+    {
+        if (!string.IsNullOrWhiteSpace(bodyValue)) return bodyValue.Trim();
+
+        var ay = await _db.Schools.AsNoTracking()
+            .Where(x => x.Id == _tenant.SchoolId)
+            .Select(x => x.AcademicYear)
+            .FirstOrDefaultAsync(ct);
+
+        if (!string.IsNullOrEmpty(ay)) return ay;
+
+        var y = DateTime.UtcNow.Year;
+        return $"{y}-{y + 1}";
     }
 }
