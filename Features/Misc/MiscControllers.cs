@@ -45,20 +45,22 @@ public sealed class PollsController : ControllerBase
     // Node gated poll writes on authenticate only (no privilege) — match that.
     public async Task<IActionResult> Create([FromBody] PollWriteRequest req, CancellationToken ct)
     {
+        var missing = new List<object>();
         if (string.IsNullOrWhiteSpace(req.Title))
-            return BadRequest(new
-            {
-                error = "Validation failed",
-                code = ErrorCodes.ValidationError,
-                details = new[] { new { field = "title", message = "Title is required." } },
-            });
+            missing.Add(new { field = "title", message = "Title is required." });
+        if (!EnumWireParse.TryOptional<PollCategory>(req.Category, out var cat))
+            missing.Add(new { field = "category", message = $"Must be one of: {EnumWireParse.Allowed<PollCategory>()}." });
+        if (!EnumWireParse.TryOptional<PollStatus>(req.Status, out var pollStatus))
+            missing.Add(new { field = "status", message = $"Must be one of: {EnumWireParse.Allowed<PollStatus>()}." });
+        if (missing.Count > 0)
+            return BadRequest(new { error = "Validation failed", code = ErrorCodes.ValidationError, details = missing });
 
         var body = new Poll
         {
-            Title = req.Title.Trim(),
+            Title = req.Title!.Trim(),
             Description = req.Description,
-            Category = req.Category ?? PollCategory.General,
-            Status = req.Status ?? PollStatus.Draft,
+            Category = cat ?? PollCategory.General,
+            Status = pollStatus ?? PollStatus.Draft,
             StartDate = req.StartDate,
             EndDate = req.EndDate,
             ShowResultsBeforeClose = req.ShowResultsBeforeClose ?? true,
@@ -92,9 +94,17 @@ public sealed class PollsController : ControllerBase
 
         // Meta only — questions/options are not edited through this route
         // (votes reference option ids; rewriting them would orphan ballots).
+        var bad = new List<object>();
+        if (!EnumWireParse.TryOptional<PollCategory>(req.Category, out var cat))
+            bad.Add(new { field = "category", message = $"Must be one of: {EnumWireParse.Allowed<PollCategory>()}." });
+        if (!EnumWireParse.TryOptional<PollStatus>(req.Status, out var newStatus))
+            bad.Add(new { field = "status", message = $"Must be one of: {EnumWireParse.Allowed<PollStatus>()}." });
+        if (bad.Count > 0)
+            return BadRequest(new { error = "Validation failed", code = ErrorCodes.ValidationError, details = bad });
+
         if (!string.IsNullOrWhiteSpace(req.Title)) p.Title = req.Title.Trim();
-        if (req.Category is { } cat) p.Category = cat;
-        if (req.Status is { } st) p.Status = st;
+        if (cat is { } c) p.Category = c;
+        if (newStatus is { } st) p.Status = st;
         if (req.TargetRoles is { Count: > 0 }) p.TargetRoles = req.TargetRoles;
         if (req.ShowResultsBeforeClose is { } sr) p.ShowResultsBeforeClose = sr;
         if (req.AllowAnonymous is { } aa) p.AllowAnonymous = aa;
