@@ -204,6 +204,8 @@ public sealed class StudentsController : ControllerBase
         if (string.IsNullOrWhiteSpace(req.AdmissionNo)) missing.Add(new { field = "admissionNo", message = "Admission number is required." });
         if (string.IsNullOrWhiteSpace(req.Class))       missing.Add(new { field = "class",       message = "Class is required." });
         if (string.IsNullOrWhiteSpace(req.Section))     missing.Add(new { field = "section",     message = "Section is required." });
+        if (!EnumWireParse.TryOptional<StudentStatus>(req.Status, out _))
+            missing.Add(new { field = "status", message = $"Must be one of: {EnumWireParse.Allowed<StudentStatus>()}." });
         if (missing.Count > 0)
             return BadRequest(new { error = "Validation failed", code = ErrorCodes.ValidationError, details = missing });
 
@@ -260,6 +262,14 @@ public sealed class StudentsController : ControllerBase
             .Include(x => x.Siblings).Include(x => x.PassedExams)
             .FirstOrDefaultAsync(x => x.Id == id, ct);
         if (s is null) return NotFound(new { error = "Not found" });
+
+        if (!EnumWireParse.TryOptional<StudentStatus>(req.Status, out _))
+            return BadRequest(new
+            {
+                error = "Validation failed",
+                code = ErrorCodes.ValidationError,
+                details = new[] { new { field = "status", message = $"Must be one of: {EnumWireParse.Allowed<StudentStatus>()}." } },
+            });
 
         // Copy mutable fields; blank academicYear is ignored (Node deletes it).
         ApplyWrite(s, req, isCreate: false);
@@ -522,7 +532,10 @@ public sealed class StudentsController : ControllerBase
         s.TransportMode = b.TransportMode; s.BusRoute = b.BusRoute; s.PickupPoint = b.PickupPoint;
         s.House = b.House; s.PhotoUrl = b.PhotoUrl; s.Notes = b.Notes;
 
-        if (b.Status is { } st) s.Status = st;
+        // Status arrives as a wire string; an unparseable value is rejected by
+        // the caller before ApplyWrite runs, so ignoring failure here is safe.
+        if (EnumWireParse.TryOptional<StudentStatus>(b.Status, out var st) && st is { } stv)
+            s.Status = stv;
 
         // AadharNo's setter masks to XXXXXXXX1234 — the DPDP control lives on
         // the entity, so assigning through it here keeps that guarantee.
