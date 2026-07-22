@@ -4,6 +4,37 @@ using QMSoft.Api.Domain.Entities;
 namespace QMSoft.Api.Common;
 
 /// <summary>
+/// Parses enum wire values supplied as plain strings on request DTOs.
+///
+/// Enums that declare a class-level [JsonConverter(EnumMemberJsonConverter&lt;T&gt;)]
+/// THROW on "" — fine for entity round-trips (the server never writes ""), but
+/// wrong for inbound DTOs, where a blank &lt;select&gt; legitimately sends "".
+/// Taking those as string? and parsing here keeps the failure inside the action,
+/// where it becomes a proper { error, code, details[] } response instead of a
+/// JsonException surfacing as an opaque 400.
+///
+/// Matches the existing house pattern (ChequeStatusRequest, MarkBulkRequest…).
+/// </summary>
+public static class EnumWireParse
+{
+    /// <summary>null/"" → null (absent). Unknown value → false, so the caller
+    /// can return a field-level validation error.</summary>
+    public static bool TryOptional<T>(string? wire, out T? value) where T : struct, Enum
+    {
+        value = null;
+        if (string.IsNullOrWhiteSpace(wire)) return true;
+
+        if (EnumWire<T>.TryParse(wire.Trim(), out var v)) { value = v; return true; }
+        return false;
+    }
+
+    /// <summary>Allowed wire values, for building an error message.</summary>
+    public static string Allowed<T>() where T : struct, Enum
+        => string.Join(", ", EnumWire<T>.Values);
+}
+
+
+/// <summary>
 /// Explicit request shapes for the endpoints that previously bound DOMAIN
 /// ENTITIES straight from the request body.
 ///
@@ -52,8 +83,10 @@ public sealed class StudentWriteRequest
     /// </summary>
     public DateOnly? AdmissionDate { get; set; }
 
-    [JsonConverter(typeof(EmptyStringToNullEnumConverter<StudentStatus>))]
-    public StudentStatus? Status { get; set; }
+    /// <summary>Wire value ("active", "inactive"…). Parsed in the action —
+    /// StudentStatus carries a class-level EnumMemberJsonConverter that throws
+    /// on "", so a typed nullable property here would reject a blank select.</summary>
+    public string? Status { get; set; }
 
     // ── Contact ───────────────────────────────────────────────────────────
     public string? Address { get; set; }
@@ -157,8 +190,8 @@ public sealed class ExamWriteRequest
 {
     public string? Name { get; set; }
 
-    [JsonConverter(typeof(EmptyStringToNullEnumConverter<ExamType>))]
-    public ExamType? Type { get; set; }
+    /// <summary>Wire value: unit_test | periodic | term | half_yearly | annual | custom.</summary>
+    public string? Type { get; set; }
 
     public string? AcademicYear { get; set; }
     public string? Class { get; set; }
@@ -172,8 +205,8 @@ public sealed class ExamWriteRequest
     public Guid? GradingScaleId { get; set; }
     public string? Notes { get; set; }
 
-    [JsonConverter(typeof(EmptyStringToNullEnumConverter<ExamStatus>))]
-    public ExamStatus? Status { get; set; }
+    /// <summary>Wire value: draft | scheduled | in_progress | completed | published.</summary>
+    public string? Status { get; set; }
 
     public List<ExamSubjectDto>? Subjects { get; set; }
 
@@ -203,14 +236,14 @@ public sealed class PollWriteRequest
     public string? Title { get; set; }
     public string? Description { get; set; }
 
-    [JsonConverter(typeof(EmptyStringToNullEnumConverter<PollCategory>))]
-    public PollCategory? Category { get; set; }
+    /// <summary>Wire value: satisfaction | event | canteen | general.</summary>
+    public string? Category { get; set; }
 
     public List<string>? TargetRoles { get; set; }
     public List<PollQuestionDto>? Questions { get; set; }
 
-    [JsonConverter(typeof(EmptyStringToNullEnumConverter<PollStatus>))]
-    public PollStatus? Status { get; set; }
+    /// <summary>Wire value: draft | active | closed.</summary>
+    public string? Status { get; set; }
 
     public DateTime? StartDate { get; set; }
     public DateTime? EndDate { get; set; }
