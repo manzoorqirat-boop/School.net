@@ -31,6 +31,18 @@ public static class EnumWireParse
     /// <summary>Allowed wire values, for building an error message.</summary>
     public static string Allowed<T>() where T : struct, Enum
         => string.Join(", ", EnumWire<T>.Values);
+
+    /// <summary>
+    /// The [EnumMember] wire value for an enum member.
+    ///
+    /// Needed wherever an enum becomes a JSON *key* rather than a JSON value.
+    /// A class-level [JsonConverter] only runs when the enum is serialized as a
+    /// value — building a dictionary with `.ToString()` bypasses it entirely and
+    /// silently emits the CLR member name ("HalfDay") instead of the contract
+    /// wire value ("half_day"). Use this instead of .ToString() in those spots.
+    /// </summary>
+    public static string ToWire<T>(T value) where T : struct, Enum
+        => EnumWire<T>.ToWire(value);
 }
 
 
