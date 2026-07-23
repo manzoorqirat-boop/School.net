@@ -98,8 +98,30 @@ public sealed class TimetableController : ControllerBase
     {
         var t = await _db.Timetables.Include(x => x.Entries).FirstOrDefaultAsync(x => x.Id == id, ct);
         if (t is null) return NotFound(new { error = "Not found" });
+
+        // This endpoint REPLACES the whole entry set. The old code did:
+        //     RemoveRange(t.Entries); t.Entries = req.Entries; SaveChanges();
+        // which blows up with a 500 whenever an incoming entry carries an Id
+        // that is already tracked (e.g. a client that copies one day's periods
+        // onto another by spreading the existing objects). EF then has the same
+        // key marked both Deleted and Added in one unit of work and refuses to
+        // track it. Duplicate Ids *within* the payload fail the same way.
+        //
+        // The incoming rows are always new rows as far as the database is
+        // concerned, so ignore any client-supplied Id and let the store assign
+        // one. Also normalise the FK/back-reference so EF does not try to infer
+        // them from a partially-populated graph.
         _db.TimetableEntries.RemoveRange(t.Entries);
-        t.Entries = req.Entries ?? [];
+
+        var incoming = req.Entries ?? [];
+        foreach (var e in incoming)
+        {
+            e.Id = Guid.Empty;          // let the database generate it
+            e.TimetableId = t.Id;
+            e.Timetable = null!;
+        }
+
+        t.Entries = incoming;
         await _db.SaveChangesAsync(ct);
         await _audit.WriteAsync("timetable.save_entries", "timetable", id.ToString(), ct: ct);
         return Ok(t);
