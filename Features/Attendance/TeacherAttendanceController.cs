@@ -94,7 +94,15 @@ public sealed class TeacherAttendanceController : ControllerBase
                 });
                 await _db.SaveChangesAsync(ct); created++;
             }
-            else if (existing.Status != st || existing.Remarks != e.Remarks)
+            // Change-detection must cover every field the update body writes.
+            // Previously this only compared Status and Remarks, so an edit that
+            // touched only CheckIn, CheckOut or OnDutyNote was counted as
+            // "unchanged" and silently never persisted.
+            else if (existing.Status != st
+                  || existing.Remarks != e.Remarks
+                  || existing.CheckIn != e.CheckIn
+                  || existing.CheckOut != e.CheckOut
+                  || existing.OnDutyNote != e.OnDutyNote)
             {
                 existing.Status = st; existing.CheckIn = e.CheckIn; existing.CheckOut = e.CheckOut;
                 existing.OnDutyNote = e.OnDutyNote; existing.Remarks = e.Remarks;
