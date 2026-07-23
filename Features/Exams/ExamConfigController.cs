@@ -42,8 +42,24 @@ public sealed class ExamConfigController : ControllerBase
         if (s is null) return NotFound(new { error = "Not found" });
         s.Name = body.Name; s.Type = body.Type; s.PassingMark = body.PassingMark;
         s.IsDefault = body.IsDefault; s.IsActive = body.IsActive;
+
+        // Same trap as TimetableController.SaveEntries: RemoveRange marks the
+        // old bands Deleted, then the incoming collection is attached as Added.
+        // If a client echoes back the bands it just read — which any edit form
+        // naturally does — their Ids are already tracked and EF throws, giving
+        // a 500 on what looks like an ordinary save. Incoming bands are new
+        // rows here, so drop any client-supplied Id and let the store assign.
         _db.GradeBands.RemoveRange(s.Bands);
-        s.Bands = body.Bands;
+
+        var incoming = body.Bands ?? [];
+        foreach (var b in incoming)
+        {
+            b.Id = Guid.Empty;
+            b.GradingScaleId = s.Id;
+            b.GradingScale = null!;
+        }
+
+        s.Bands = incoming;
         await _db.SaveChangesAsync(ct);
         await _audit.WriteAsync("grading_scale.update", "grading_scale", id.ToString(), ct: ct);
         return Ok(s);
@@ -89,6 +105,16 @@ public sealed class ExamConfigController : ControllerBase
         if (s is null) return NotFound(new { error = "Not found" });
         s.Name = body.Name; s.Code = body.Code; s.IsCoScholastic = body.IsCoScholastic;
         s.DefaultMaxMarks = body.DefaultMaxMarks; s.DisplayOrder = body.DisplayOrder; s.IsActive = body.IsActive;
+
+        // Class and AcademicYear were previously NOT copied, so a subject could
+        // never be moved between classes or carried into a new year — the PUT
+        // returned 200 and silently discarded those two fields. They scope the
+        // whole record (subjects are listed per class + year), so a client that
+        // sends them expects them applied. Guard against blanks so a partial
+        // payload cannot orphan a subject out of its class.
+        if (!string.IsNullOrWhiteSpace(body.Class)) s.Class = body.Class;
+        if (!string.IsNullOrWhiteSpace(body.AcademicYear)) s.AcademicYear = body.AcademicYear;
+
         await _db.SaveChangesAsync(ct);
         return Ok(s);
     }
