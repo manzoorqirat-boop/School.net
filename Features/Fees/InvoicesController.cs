@@ -64,8 +64,26 @@ public sealed class InvoicesController : ControllerBase
         if (inv is null) return NotFound(new { error = "Not found" });
         if (req.Discount < 0 || req.Discount > inv.Subtotal)
             return BadRequest(new { error = "Discount out of range" });
+
+        // A discount that pushes the total below what has already been collected
+        // would leave AmountPaid > Total — an overpayment the system has no
+        // refund path for, which RecomputeStoredStatus would silently mark paid.
+        // Reject it and tell the caller the largest discount that is still safe.
+        var newTotal = inv.Subtotal - req.Discount + inv.LateFee;
+        if (newTotal < inv.AmountPaid)
+        {
+            var maxDiscount = inv.Subtotal + inv.LateFee - inv.AmountPaid;
+            return BadRequest(new
+            {
+                error = $"Discount would drop the total below the ₹{inv.AmountPaid:N2} already paid. Maximum allowed discount is ₹{(maxDiscount < 0 ? 0 : maxDiscount):N2}.",
+                code = "DISCOUNT_BELOW_PAID",
+                amountPaid = inv.AmountPaid,
+                maxDiscount = maxDiscount < 0 ? 0 : maxDiscount,
+            });
+        }
+
         inv.Discount = req.Discount; inv.DiscountReason = req.Reason;
-        inv.Total = inv.Subtotal - inv.Discount + inv.LateFee;
+        inv.Total = newTotal;
         inv.RecomputeStoredStatus();
         await _db.SaveChangesAsync(ct);
         await _audit.WriteAsync("invoice.discount", "invoice", id.ToString(), ct: ct);
