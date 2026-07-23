@@ -245,12 +245,257 @@ public sealed class ExamsController : ControllerBase
         return Ok(new { saved });
     }
 
+    /// <summary>
+    /// Full exam analytics: per-student matrix, 1224 ranking, division bands,
+    /// subject toppers, class topper and aggregate stats.
+    ///
+    /// The Node original returned all of this. The port reduced it to a flat
+    /// dump of ExamResult rows (`{ items, count }`), which is why the exams
+    /// screen could only show "Results entered: N" — same URL and privilege,
+    /// silently different contract. This restores the original shape.
+    ///
+    /// Everything is computed in memory after two queries: the ranking, the
+    /// per-subject topper scan and the division bands are not expressible in
+    /// SQL cheaply, and a class is tens of rows, not thousands.
+    /// </summary>
     [HttpGet("{id:guid}/results")]
     [RequirePrivilege("exam:view")]
     public async Task<IActionResult> Results(Guid id, CancellationToken ct)
     {
-        var items = await _db.ExamResults.AsNoTracking().Where(r => r.ExamId == id).ToListAsync(ct);
-        return Ok(new { items, count = items.Count });
+        var exam = await _db.Exams.AsNoTracking()
+            .Include(e => e.Subjects)
+            .FirstOrDefaultAsync(e => e.Id == id, ct);
+        if (exam is null) return NotFound(new { error = "Not found" });
+
+        var scale = exam.GradingScaleId is null ? null
+            : await _db.GradingScales.AsNoTracking().Include(s => s.Bands)
+                .FirstOrDefaultAsync(s => s.Id == exam.GradingScaleId, ct);
+
+        var results = await _db.ExamResults.AsNoTracking()
+            .Where(r => r.ExamId == id).ToListAsync(ct);
+
+        // Roster = every active student in the exam's class/section, so students
+        // with no marks entered still appear (as anyMissing) rather than
+        // vanishing from the report.
+        var roster = await _db.Students.AsNoTracking()
+            .Where(s => s.Class == exam.Class
+                     && (exam.Section == null || s.Section == exam.Section)
+                     && s.Status == StudentStatus.Active)
+            .OrderBy(s => s.RollNo).ThenBy(s => s.FirstName)
+            .ToListAsync(ct);
+
+        var subjects = exam.Subjects.ToList();
+        var byStudent = results.GroupBy(r => r.StudentId)
+            .ToDictionary(g => g.Key, g => g.ToDictionary(x => x.SubjectId, x => x));
+
+        var matrix = new List<ResultRow>();
+        foreach (var s in roster)
+        {
+            byStudent.TryGetValue(s.Id, out var mine);
+            decimal totalObtained = 0, totalMax = 0;
+            bool anyAbsent = false, anyMissing = false, anyFail = false;
+            var subjectRows = new List<object?>();
+
+            foreach (var sub in subjects)
+            {
+                ExamResult? r = null;
+                mine?.TryGetValue(sub.SubjectId, out r);
+
+                if (r is null) { anyMissing = true; subjectRows.Add(null); continue; }
+
+                if (r.Status == ExamResultStatus.Absent)
+                {
+                    anyAbsent = true; anyFail = true;
+                }
+                else if (r.MarksObtained is not null)
+                {
+                    totalObtained += r.MarksObtained.Value;
+                    totalMax += sub.MaxMarks;
+                    // Per-subject passing override, else the Indian 33% default.
+                    var passMark = sub.PassingMark ?? (sub.MaxMarks * 0.33m);
+                    if (r.MarksObtained.Value < passMark) anyFail = true;
+                }
+
+                subjectRows.Add(new
+                {
+                    subjectId = sub.SubjectId,
+                    subjectName = sub.SubjectName,
+                    maxMarks = sub.MaxMarks,
+                    marksObtained = r.MarksObtained,
+                    percentage = r.Percentage,
+                    grade = r.Grade,
+                    gpa = r.Gpa,
+                    status = EnumWireParse.ToWire(r.Status),
+                    isPassing = r.IsPassing,
+                });
+            }
+
+            var overallPct = totalMax > 0
+                ? Math.Round((totalObtained / totalMax) * 100m, 1) : 0m;
+            var overallGrade = scale is not null && totalMax > 0
+                ? scale.GradeFor(overallPct).Grade : null;
+
+            // Indian-board division bands — common across CBSE, ICSE and state
+            // boards. Only meaningful when the student sat every paper.
+            string? division = null;
+            if (totalMax > 0 && !anyAbsent && !anyMissing)
+            {
+                if (anyFail) division = "Fail";
+                else if (overallPct >= 60) division = "First";
+                else if (overallPct >= 45) division = "Second";
+                else if (overallPct >= 33) division = "Third";
+                else division = "Fail";
+            }
+
+            matrix.Add(new ResultRow
+            {
+                StudentId = s.Id,
+                AdmissionNo = s.AdmissionNo,
+                RollNo = s.RollNo,
+                Name = string.Join(" ", new[] { s.FirstName, s.LastName }
+                    .Where(x => !string.IsNullOrWhiteSpace(x))),
+                Subjects = subjectRows,
+                TotalObtained = totalObtained,
+                TotalMax = totalMax,
+                OverallPct = overallPct,
+                OverallGrade = overallGrade,
+                Division = division,
+                AnyAbsent = anyAbsent,
+                AnyMissing = anyMissing,
+                AnyFail = anyFail,
+                IsPassing = !anyFail && !anyMissing && totalMax > 0,
+            });
+        }
+
+        // 1224 ranking (competitive standard): equal percentages share a rank
+        // and the next distinct percentage skips ahead. Students with any
+        // subject unmarked are excluded rather than ranked last — an incomplete
+        // marksheet is not a poor performance.
+        var rankable = matrix.Where(r => !r.AnyMissing && r.TotalMax > 0)
+            .OrderByDescending(r => r.OverallPct).ToList();
+        decimal? lastPct = null; int lastRank = 0;
+        for (var i = 0; i < rankable.Count; i++)
+        {
+            if (lastPct is not null && rankable[i].OverallPct == lastPct.Value)
+            {
+                rankable[i].Rank = lastRank;
+            }
+            else
+            {
+                rankable[i].Rank = i + 1;
+                lastRank = i + 1;
+                lastPct = rankable[i].OverallPct;
+            }
+        }
+
+        // Highest scorer per subject, present students only.
+        var subjectToppers = subjects.Select(sub =>
+        {
+            object? top = null;
+            decimal best = decimal.MinValue;
+            foreach (var row in matrix)
+            {
+                if (!byStudent.TryGetValue(row.StudentId, out var mine)) continue;
+                if (!mine.TryGetValue(sub.SubjectId, out var r)) continue;
+                if (r.Status != ExamResultStatus.Present || r.MarksObtained is null) continue;
+                if (r.MarksObtained.Value > best)
+                {
+                    best = r.MarksObtained.Value;
+                    top = new
+                    {
+                        studentId = row.StudentId,
+                        name = row.Name,
+                        rollNo = row.RollNo,
+                        marksObtained = r.MarksObtained,
+                        maxMarks = sub.MaxMarks,
+                        percentage = r.Percentage,
+                    };
+                }
+            }
+            return new { subjectId = sub.SubjectId, subjectName = sub.SubjectName, topper = top };
+        }).ToList();
+
+        var presentCount = matrix.Count(r => !r.AnyMissing && !r.AnyAbsent);
+        var passCount = matrix.Count(r => r.IsPassing);
+        var failCount = matrix.Count(r => !r.IsPassing && !r.AnyMissing);
+        var absentCount = matrix.Count(r => r.AnyAbsent);
+        var pcts = rankable.Select(r => r.OverallPct).ToList();
+
+        var divisions = new Dictionary<string, int>
+        { ["First"] = 0, ["Second"] = 0, ["Third"] = 0, ["Fail"] = 0 };
+        foreach (var r in matrix)
+            if (r.Division is not null && divisions.ContainsKey(r.Division)) divisions[r.Division]++;
+
+        var topRow = rankable.FirstOrDefault();
+
+        return Ok(new
+        {
+            exam = new
+            {
+                _id = exam.Id, name = exam.Name,
+                type = EnumWireParse.ToWire(exam.Type),
+                status = EnumWireParse.ToWire(exam.Status),
+                fromDate = exam.FromDate, toDate = exam.ToDate,
+                @class = exam.Class, section = exam.Section,
+                academicYear = exam.AcademicYear,
+            },
+            gradingScale = scale is null ? null : new
+            {
+                _id = scale.Id, name = scale.Name,
+                type = EnumWireParse.ToWire(scale.Type),
+            },
+            subjects,
+            rows = matrix.Select(r => new
+            {
+                student = new { _id = r.StudentId, admissionNo = r.AdmissionNo, rollNo = r.RollNo, name = r.Name },
+                subjects = r.Subjects,
+                totalObtained = r.TotalObtained, totalMax = r.TotalMax,
+                overallPct = r.OverallPct, overallGrade = r.OverallGrade,
+                division = r.Division, rank = r.Rank,
+                anyAbsent = r.AnyAbsent, anyMissing = r.AnyMissing,
+                anyFail = r.AnyFail, isPassing = r.IsPassing,
+            }),
+            stats = new
+            {
+                totalStudents = matrix.Count,
+                presentCount, passCount, failCount, absentCount,
+                passPercentage = presentCount > 0
+                    ? Math.Round((decimal)passCount / presentCount * 100m, 1) : 0m,
+                avgPct = pcts.Count > 0 ? Math.Round(pcts.Average(), 1) : 0m,
+                highPct = pcts.Count > 0 ? pcts.Max() : 0m,
+                lowPct = pcts.Count > 0 ? pcts.Min() : 0m,
+                divisions,
+            },
+            subjectToppers,
+            classTopper = topRow is null ? null : new
+            {
+                studentId = topRow.StudentId,
+                name = topRow.Name,
+                rollNo = topRow.RollNo,
+                percentage = topRow.OverallPct,
+                grade = topRow.OverallGrade,
+            },
+        });
+    }
+
+    /// <summary>Mutable carrier so rank can be assigned after sorting.</summary>
+    private sealed class ResultRow
+    {
+        public Guid StudentId { get; init; }
+        public string AdmissionNo { get; init; } = "";
+        public string? RollNo { get; init; }
+        public string Name { get; init; } = "";
+        public List<object?> Subjects { get; init; } = [];
+        public decimal TotalObtained { get; init; }
+        public decimal TotalMax { get; init; }
+        public decimal OverallPct { get; init; }
+        public string? OverallGrade { get; init; }
+        public string? Division { get; init; }
+        public bool AnyAbsent { get; init; }
+        public bool AnyMissing { get; init; }
+        public bool AnyFail { get; init; }
+        public bool IsPassing { get; init; }
+        public int? Rank { get; set; }
     }
 
     /// <summary>Falls back to the school's current academic year when the
