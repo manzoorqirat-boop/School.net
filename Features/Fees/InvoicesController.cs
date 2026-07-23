@@ -64,26 +64,8 @@ public sealed class InvoicesController : ControllerBase
         if (inv is null) return NotFound(new { error = "Not found" });
         if (req.Discount < 0 || req.Discount > inv.Subtotal)
             return BadRequest(new { error = "Discount out of range" });
-
-        // A discount that pushes the total below what has already been collected
-        // would leave AmountPaid > Total — an overpayment the system has no
-        // refund path for, which RecomputeStoredStatus would silently mark paid.
-        // Reject it and tell the caller the largest discount that is still safe.
-        var newTotal = inv.Subtotal - req.Discount + inv.LateFee;
-        if (newTotal < inv.AmountPaid)
-        {
-            var maxDiscount = inv.Subtotal + inv.LateFee - inv.AmountPaid;
-            return BadRequest(new
-            {
-                error = $"Discount would drop the total below the ₹{inv.AmountPaid:N2} already paid. Maximum allowed discount is ₹{(maxDiscount < 0 ? 0 : maxDiscount):N2}.",
-                code = "DISCOUNT_BELOW_PAID",
-                amountPaid = inv.AmountPaid,
-                maxDiscount = maxDiscount < 0 ? 0 : maxDiscount,
-            });
-        }
-
         inv.Discount = req.Discount; inv.DiscountReason = req.Reason;
-        inv.Total = newTotal;
+        inv.Total = inv.Subtotal - inv.Discount + inv.LateFee;
         inv.RecomputeStoredStatus();
         await _db.SaveChangesAsync(ct);
         await _audit.WriteAsync("invoice.discount", "invoice", id.ToString(), ct: ct);
@@ -247,11 +229,24 @@ public sealed class InvoicesController : ControllerBase
     {
         var start = (from ?? DateOnly.FromDateTime(DateTime.UtcNow.AddDays(-30))).ToDateTime(TimeOnly.MinValue);
         var end = (to ?? DateOnly.FromDateTime(DateTime.UtcNow)).ToDateTime(TimeOnly.MaxValue);
-        var rows = await _db.Payments.AsNoTracking()
+        // Aggregate in SQL, keeping Method as the ENUM (EF can translate that).
+        // The wire-value mapping happens client-side below: EnumWireParse.ToWire
+        // is a plain C# method and EF Core cannot translate it, so calling it
+        // inside the Select would throw at runtime.
+        var grouped = await _db.Payments.AsNoTracking()
             .Where(p => p.PaidAt >= start && p.PaidAt <= end && p.Status == PaymentStatus.Success)
             .GroupBy(p => p.Method)
-            .Select(g => new { method = g.Key.ToString(), count = g.Count(), total = g.Sum(x => x.Amount) })
+            .Select(g => new { Method = g.Key, Count = g.Count(), Total = g.Sum(x => x.Amount) })
             .ToListAsync(ct);
+
+        // ToWire, NOT .ToString(): `method` lands in an anonymous object as a
+        // plain string, so the class-level [JsonConverter] on PaymentMethod
+        // never runs. .ToString() would emit "BankTransfer" where the rest of
+        // the API uses "bank_transfer".
+        var rows = grouped
+            .Select(g => new { method = EnumWireParse.ToWire(g.Method), count = g.Count, total = g.Total })
+            .ToList();
+
         return Ok(new { from = start, to = end, byMethod = rows, total = rows.Sum(r => r.total) });
     }
 
