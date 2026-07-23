@@ -161,7 +161,14 @@ public sealed class AttendanceController : ControllerBase
                     await _db.SaveChangesAsync(ct);
                     created++;
                 }
-                else if (existing.Status != status || existing.Remarks != e.Remarks)
+                // Change-detection must cover every field the update body writes.
+                // Previously this only compared Status and Remarks, so a correction
+                // that touched only ArrivedAt (late arrival time) or LeaveReason was
+                // counted as "unchanged" and silently never persisted.
+                else if (existing.Status != status
+                      || existing.Remarks != e.Remarks
+                      || existing.ArrivedAt != e.ArrivedAt
+                      || existing.LeaveReason != e.LeaveReason)
                 {
                     existing.Status = status;
                     existing.Remarks = e.Remarks;
