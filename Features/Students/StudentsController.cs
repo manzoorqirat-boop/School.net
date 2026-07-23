@@ -477,14 +477,27 @@ public sealed class StudentsController : ControllerBase
         return $"{y}-{y + 1}";
     }
 
+    // The MVC pipeline's camelCase policy is applied by the output formatter,
+    // but MergeParent hand-serializes to a JsonObject and returns THAT, so the
+    // formatter sees an already-shaped node and passes it through verbatim.
+    // Without these options the create response comes back PascalCase
+    // ("FirstName", "AdmissionNo") while every other student endpoint returns
+    // camelCase — the app prepends the created row to its list and every field
+    // except _id renders blank until a manual refresh.
+    private static readonly System.Text.Json.JsonSerializerOptions MergeJson = new()
+    {
+        PropertyNamingPolicy = System.Text.Json.JsonNamingPolicy.CamelCase,
+        DefaultIgnoreCondition = System.Text.Json.Serialization.JsonIgnoreCondition.Never,
+    };
+
     private static object MergeParent(Student s, object? parentInfo)
     {
         // Serialize the student then attach _parent — matches Node's
         // { ...s.toObject(), _parent }.
-        var json = System.Text.Json.JsonSerializer.SerializeToNode(s)!.AsObject();
+        var json = System.Text.Json.JsonSerializer.SerializeToNode(s, MergeJson)!.AsObject();
         json["_parent"] = parentInfo is null
             ? null
-            : System.Text.Json.JsonSerializer.SerializeToNode(parentInfo);
+            : System.Text.Json.JsonSerializer.SerializeToNode(parentInfo, MergeJson);
         return json;
     }
 
