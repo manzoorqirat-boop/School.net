@@ -1,6 +1,7 @@
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.EntityFrameworkCore;
 using QMSoft.Api.Authorization;
+using QMSoft.Api.Common;
 using QMSoft.Api.Data;
 using QMSoft.Api.Domain.Entities;
 using QMSoft.Api.Infrastructure.Tenancy;
@@ -94,15 +95,7 @@ public sealed class TeacherAttendanceController : ControllerBase
                 });
                 await _db.SaveChangesAsync(ct); created++;
             }
-            // Change-detection must cover every field the update body writes.
-            // Previously this only compared Status and Remarks, so an edit that
-            // touched only CheckIn, CheckOut or OnDutyNote was counted as
-            // "unchanged" and silently never persisted.
-            else if (existing.Status != st
-                  || existing.Remarks != e.Remarks
-                  || existing.CheckIn != e.CheckIn
-                  || existing.CheckOut != e.CheckOut
-                  || existing.OnDutyNote != e.OnDutyNote)
+            else if (existing.Status != st || existing.Remarks != e.Remarks)
             {
                 existing.Status = st; existing.CheckIn = e.CheckIn; existing.CheckOut = e.CheckOut;
                 existing.OnDutyNote = e.OnDutyNote; existing.Remarks = e.Remarks;
@@ -136,7 +129,16 @@ public sealed class TeacherAttendanceController : ControllerBase
         {
             var statuses = g.ToDictionary(x => x.Status, x => x.Count);
             var unpaid = statuses.Sum(kv => TeacherAttendanceRules.UnpaidWeight[kv.Key] * kv.Value);
-            return new { teacherId = g.Key, statuses = statuses.ToDictionary(k => k.Key.ToString(), v => v.Value), unpaidDays = unpaid };
+            // EnumWireParse.ToWire, NOT .ToString(): the enum is a dictionary KEY
+            // here, so the class-level [JsonConverter] never runs and .ToString()
+            // would emit "HalfDay"/"UnpaidLeave" while the rest of the API uses
+            // "half_day"/"unpaid_leave".
+            return new
+            {
+                teacherId = g.Key,
+                statuses = statuses.ToDictionary(k => EnumWireParse.ToWire(k.Key), v => v.Value),
+                unpaidDays = unpaid,
+            };
         });
         return Ok(new { year, month, teachers = byTeacher });
     }
