@@ -1,6 +1,7 @@
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.EntityFrameworkCore;
 using QMSoft.Api.Authorization;
+using QMSoft.Api.Common;
 using QMSoft.Api.Data;
 using QMSoft.Api.Domain.Entities;
 using QMSoft.Api.Infrastructure.Tenancy;
@@ -150,12 +151,26 @@ public sealed class ReportCardsController : ControllerBase
     private readonly ITenantContext _tenant;
     public ReportCardsController(AppDbContext db, ITenantContext tenant) { _db = db; _tenant = tenant; }
 
-    // Aggregate a student's results across all exams in a year into a report card.
+    /// <summary>
+    /// Aggregate a student's results across a year into a report card.
+    ///
+    /// The port had reduced this to student + a per-exam total. Restored to the
+    /// Node contract, because the PDF/print layer needs all of it:
+    ///   • school block   — name, address, logo (report card letterhead)
+    ///   • parent names + dob (the student detail block)
+    ///   • exam type / dates / status / weightInFinal
+    ///   • grading scale and overallGrade per exam
+    ///   • composite      — weighted year-final across exams with weightInFinal
+    ///
+    /// It also walks the EXAM's subject list rather than grouping the result
+    /// rows: grouping meant a subject with no marks entered vanished from the
+    /// card entirely instead of showing as not_entered.
+    /// </summary>
     [HttpGet("student/{studentId:guid}")]
     [RequirePrivilege("exam:view")]
-    public async Task<IActionResult> StudentReportCard(Guid studentId, [FromQuery] string? academicYear, CancellationToken ct)
+    public async Task<IActionResult> StudentReportCard(Guid studentId, [FromQuery] string? academicYear, [FromQuery] Guid? examId, CancellationToken ct)
     {
-        // Row-scope: parent/student can only see their own.
+        // Row-scope: parent/student can only see their own. Staff fall through.
         if (_tenant.Role == "parent")
         {
             var owned = await _db.Users.IgnoreQueryFilters().Where(u => u.Id == _tenant.UserId)
@@ -168,29 +183,181 @@ public sealed class ReportCardsController : ControllerBase
         var student = await _db.Students.AsNoTracking().FirstOrDefaultAsync(s => s.Id == studentId, ct);
         if (student is null) return NotFound(new { error = "Not found" });
 
-        var q = _db.ExamResults.AsNoTracking().Where(r => r.StudentId == studentId);
-        if (!string.IsNullOrEmpty(academicYear)) q = q.Where(r => r.AcademicYear == academicYear);
-        var results = await q.ToListAsync(ct);
+        var year = string.IsNullOrWhiteSpace(academicYear) ? student.AcademicYear : academicYear;
 
-        var byExam = results.GroupBy(r => new { r.ExamId, r.ExamName }).Select(g =>
+        var examQ = _db.Exams.AsNoTracking().Include(e => e.Subjects)
+            .Where(e => e.Class == student.Class && e.AcademicYear == year);
+        if (examId is not null)
+            examQ = examQ.Where(e => e.Id == examId.Value);
+        else if (_tenant.Role is "parent" or "student")
+            // Families see published exams only; staff see drafts too.
+            examQ = examQ.Where(e => e.Status == ExamStatus.Published);
+
+        var exams = await examQ.OrderBy(e => e.FromDate).ToListAsync(ct);
+
+        var scaleIds = exams.Where(e => e.GradingScaleId != null)
+            .Select(e => e.GradingScaleId!.Value).Distinct().ToList();
+        var scales = await _db.GradingScales.AsNoTracking().Include(s => s.Bands)
+            .Where(s => scaleIds.Contains(s.Id)).ToDictionaryAsync(s => s.Id, ct);
+
+        var examIds = exams.Select(e => e.Id).ToList();
+        var allResults = await _db.ExamResults.AsNoTracking()
+            .Where(r => r.StudentId == studentId && examIds.Contains(r.ExamId))
+            .ToListAsync(ct);
+
+        var examData = new List<ExamCard>();
+        foreach (var exam in exams)
         {
-            var graded = g.Where(r => r.Status == ExamResultStatus.Present && r.MarksObtained != null).ToList();
-            var obtained = graded.Sum(r => r.MarksObtained!.Value);
-            var max = graded.Sum(r => r.MaxMarks);
-            return new
+            var mine = allResults.Where(r => r.ExamId == exam.Id)
+                .ToDictionary(r => r.SubjectId, r => r);
+            GradingScale? scale = null;
+            if (exam.GradingScaleId is not null) scales.TryGetValue(exam.GradingScaleId.Value, out scale);
+
+            var subjectRows = exam.Subjects.Select(sub =>
             {
-                examId = g.Key.ExamId, examName = g.Key.ExamName,
-                subjects = g.Select(r => new { r.SubjectName, r.MarksObtained, r.MaxMarks, r.Percentage, r.Grade, r.IsPassing, r.Status }),
-                totalObtained = obtained, totalMax = max,
-                percentage = max > 0 ? Math.Round(obtained * 100m / max, 1, MidpointRounding.AwayFromZero) : 0m,
+                mine.TryGetValue(sub.SubjectId, out var r);
+                return new SubjectRow
+                {
+                    SubjectId = sub.SubjectId,
+                    SubjectName = sub.SubjectName,
+                    MaxMarks = sub.MaxMarks,
+                    MarksObtained = r?.MarksObtained,
+                    Percentage = r?.Percentage,
+                    Grade = r?.Grade,
+                    Gpa = r?.Gpa,
+                    Status = r is null ? "not_entered" : EnumWireParse.ToWire(r.Status),
+                    IsPassing = r?.IsPassing,
+                };
+            }).ToList();
+
+            var totalObtained = subjectRows.Sum(r => r.MarksObtained ?? 0m);
+            var totalMax = subjectRows.Sum(r => r.MaxMarks);
+            var overallPct = totalMax > 0 ? Math.Round(totalObtained * 100m / totalMax, 1) : 0m;
+
+            examData.Add(new ExamCard
+            {
+                Exam = exam, Scale = scale, Subjects = subjectRows,
+                TotalObtained = totalObtained, TotalMax = totalMax,
+                OverallPct = overallPct,
+                OverallGrade = scale?.GradeFor(overallPct).Grade,
+            });
+        }
+
+        // Composite (year final): each exam contributes its weightInFinal share
+        // of every subject's percentage. Only exams that declare a weight take
+        // part, so a school not using weights simply gets composite = null.
+        object? composite = null;
+        var weighted = examData.Where(e => e.Exam.WeightInFinal > 0).ToList();
+        if (weighted.Count > 0)
+        {
+            var sumWeights = weighted.Sum(e => e.Exam.WeightInFinal);
+            var subjectIds = weighted.SelectMany(e => e.Subjects.Select(s => s.SubjectId)).Distinct();
+
+            // Typed, not anonymous: the overall average below has to read
+            // finalPercentage back, and `dynamic` inside a LINQ lambda fails at
+            // runtime rather than compile time.
+            var compositeSubjects = new List<CompositeSubject>();
+            foreach (var sid in subjectIds)
+            {
+                decimal weightedSum = 0, weightApplied = 0;
+                var subjectName = "";
+                foreach (var e in weighted)
+                {
+                    var sub = e.Subjects.FirstOrDefault(s => s.SubjectId == sid);
+                    if (sub?.Percentage is null) continue;
+                    weightedSum += sub.Percentage.Value * e.Exam.WeightInFinal;
+                    weightApplied += e.Exam.WeightInFinal;
+                    subjectName = sub.SubjectName;
+                }
+                compositeSubjects.Add(new CompositeSubject(
+                    sid, subjectName,
+                    weightApplied > 0 ? Math.Round(weightedSum / weightApplied, 1) : 0m));
+            }
+
+            var overallFinal = compositeSubjects.Count > 0
+                ? Math.Round(compositeSubjects.Sum(x => x.FinalPercentage) / compositeSubjects.Count, 1)
+                : 0m;
+
+            composite = new
+            {
+                sumWeights,
+                subjects = compositeSubjects.Select(x => new
+                {
+                    subjectId = x.SubjectId, subjectName = x.SubjectName,
+                    finalPercentage = x.FinalPercentage,
+                }),
+                overallFinalPercentage = overallFinal,
             };
-        });
+        }
+
+        var school = await _db.Schools.AsNoTracking()
+            .Where(s => s.Id == _tenant.SchoolId)
+            .Select(s => new { s.Name, s.NameHindi, s.Address, s.City, s.State, s.Pincode, s.LogoUrl, s.AcademicYear })
+            .FirstOrDefaultAsync(ct);
 
         return Ok(new
         {
-            student = new { _id = student.Id, student.AdmissionNo, student.RollNo, student.FirstName, student.LastName, student.Class, student.Section },
-            academicYear,
-            exams = byExam,
+            school,
+            student = new
+            {
+                _id = student.Id, student.AdmissionNo, student.RollNo,
+                student.FirstName, student.LastName, student.Class, student.Section,
+                student.Dob, student.FatherName, student.MotherName,
+            },
+            academicYear = year,
+            exams = examData.Select(e => new
+            {
+                exam = new
+                {
+                    _id = e.Exam.Id, name = e.Exam.Name,
+                    type = EnumWireParse.ToWire(e.Exam.Type),
+                    fromDate = e.Exam.FromDate, toDate = e.Exam.ToDate,
+                    status = EnumWireParse.ToWire(e.Exam.Status),
+                    publishedAt = e.Exam.PublishedAt,
+                    weightInFinal = e.Exam.WeightInFinal,
+                },
+                gradingScale = e.Scale is null ? null
+                    : new { name = e.Scale.Name, type = EnumWireParse.ToWire(e.Scale.Type) },
+                subjects = e.Subjects.Select(s => new
+                {
+                    subjectId = s.SubjectId, subjectName = s.SubjectName,
+                    maxMarks = s.MaxMarks, marksObtained = s.MarksObtained,
+                    percentage = s.Percentage, grade = s.Grade, gpa = s.Gpa,
+                    status = s.Status, isPassing = s.IsPassing,
+                }),
+                totals = new
+                {
+                    totalObtained = e.TotalObtained, totalMax = e.TotalMax,
+                    overallPct = e.OverallPct, overallGrade = e.OverallGrade,
+                },
+            }),
+            composite,
         });
+    }
+
+    private sealed record CompositeSubject(Guid SubjectId, string SubjectName, decimal FinalPercentage);
+
+    private sealed class SubjectRow
+    {
+        public Guid SubjectId { get; init; }
+        public string SubjectName { get; init; } = "";
+        public decimal MaxMarks { get; init; }
+        public decimal? MarksObtained { get; init; }
+        public decimal? Percentage { get; init; }
+        public string? Grade { get; init; }
+        public decimal? Gpa { get; init; }
+        public string Status { get; init; } = "";
+        public bool? IsPassing { get; init; }
+    }
+
+    private sealed class ExamCard
+    {
+        public Exam Exam { get; init; } = null!;
+        public GradingScale? Scale { get; init; }
+        public List<SubjectRow> Subjects { get; init; } = [];
+        public decimal TotalObtained { get; init; }
+        public decimal TotalMax { get; init; }
+        public decimal OverallPct { get; init; }
+        public string? OverallGrade { get; init; }
     }
 }
