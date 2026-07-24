@@ -134,6 +134,131 @@ public sealed class PayrollController : ControllerBase
     // ── Payslip generation ────────────────────────────────────────────────
     public sealed record GenerateTeacherRequest(Guid TeacherId, int Month, int Year, string? AcademicYear);
 
+    public sealed record GenerateRunRequest(int Month, int Year, string? AcademicYear, bool Force = false);
+
+    /// <summary>
+    /// Bulk payroll run for every active teacher. Restores POST /api/payroll/generate
+    /// from the Node backend — the port only had generate/teacher, so a school with
+    /// 40 staff had to generate 40 payslips one at a time and no PayrollRun row was
+    /// ever created (leaving /runs permanently empty and bank transfers impossible).
+    ///
+    /// Idempotent: re-running a month reuses the existing PayrollRun rather than
+    /// tripping the unique index, and per-teacher regeneration still honours
+    /// GuardRegeneration, so locked or already-paid payslips are skipped with a
+    /// reason instead of being silently overwritten.
+    /// </summary>
+    [HttpPost("generate")]
+    [RequirePrivilege("payroll:manage")]
+    public async Task<IActionResult> GenerateRun([FromBody] GenerateRunRequest req, CancellationToken ct)
+    {
+        if (req.Month is < 1 or > 12) return BadRequest(new { error = "Valid month (1-12) required" });
+        if (req.Year is < 2000 or > 2100) return BadRequest(new { error = "Valid year required" });
+
+        var school = await _db.Schools.AsNoTracking().FirstOrDefaultAsync(x => x.Id == _tenant.SchoolId, ct);
+        var academicYear = !string.IsNullOrWhiteSpace(req.AcademicYear)
+            ? req.AcademicYear!
+            : school?.AcademicYear ?? "";
+
+        var teachers = await _db.Users.AsNoTracking()
+            .Where(u => u.Role == UserRole.Teacher && u.IsActive)
+            .OrderBy(u => u.Name).ToListAsync(ct);
+        if (teachers.Count == 0) return BadRequest(new { error = "No active teachers found" });
+
+        // Reuse an existing run for this month so totals accumulate against it.
+        var run = await _db.PayrollRuns.FirstOrDefaultAsync(
+            r => r.Month == req.Month && r.Year == req.Year, ct);
+        if (run is null)
+        {
+            run = new PayrollRun
+            {
+                Name = $"{System.Globalization.CultureInfo.InvariantCulture.DateTimeFormat.GetMonthName(req.Month)} {req.Year} Payroll",
+                Month = req.Month, Year = req.Year,
+                AcademicYear = academicYear,
+                InitiatedByUserId = _tenant.UserId,
+            };
+            _db.PayrollRuns.Add(run);
+            await _db.SaveChangesAsync(ct);   // need run.Id for the payslips below
+        }
+        run.TotalTeachers = teachers.Count;
+        run.AcademicYear ??= academicYear;
+        run.Skipped.Clear();
+
+        var generated = 0;
+        foreach (var teacher in teachers)
+        {
+            try
+            {
+                var ss = await _db.SalaryStructures.AsNoTracking()
+                    .FirstOrDefaultAsync(x => x.TeacherId == teacher.Id && x.IsActive, ct);
+                if (ss is null)
+                {
+                    run.Skipped.Add(new SkippedTeacher
+                    { TeacherId = teacher.Id, Name = teacher.Name, Reason = "No active salary structure" });
+                    continue;
+                }
+
+                var existing = await _db.Payrolls.FirstOrDefaultAsync(
+                    x => x.TeacherId == teacher.Id && x.Year == req.Year && x.Month == req.Month, ct);
+                if (existing is not null)
+                {
+                    try
+                    {
+                        // Throws when locked/paid unless force — that is a skip,
+                        // not a failed run.
+                        existing.GuardRegeneration(req.Force);
+                    }
+                    catch (Exception ex)
+                    {
+                        run.Skipped.Add(new SkippedTeacher
+                        { TeacherId = teacher.Id, Name = teacher.Name, Reason = ex.Message });
+                        continue;
+                    }
+                    _db.Payrolls.Remove(existing);
+                }
+
+                var unpaid = await ComputeUnpaidDaysAsync(teacher.Id, req.Year, req.Month, ct);
+                var payslip = Domain.Entities.Payroll.BuildPayslip(
+                    ss, teacher, req.Month, req.Year, academicYear, unpaid);
+                payslip.PayrollRunId = run.Id;
+                _db.Payrolls.Add(payslip);
+                generated++;
+            }
+            catch (Exception ex)
+            {
+                // One bad structure must not abort the other 39 payslips.
+                run.Skipped.Add(new SkippedTeacher
+                { TeacherId = teacher.Id, Name = teacher.Name, Reason = ex.Message });
+            }
+        }
+
+        run.PayrollsSkipped = run.Skipped.Count;
+        run.Status = PayrollRunStatus.Generated;
+        run.GeneratedAt = DateTime.UtcNow;
+        await _db.SaveChangesAsync(ct);
+
+        // Recompute aggregates from the payslip rows, not from the loop counters —
+        // a re-run must not double-count what a previous run already wrote.
+        var rows = await _db.Payrolls.AsNoTracking()
+            .Where(x => x.PayrollRunId == run.Id).ToListAsync(ct);
+        run.PayrollsGenerated = rows.Count;
+        run.PayrollsLocked = rows.Count(x => x.Status == PayrollStatus.Locked);
+        run.PayrollsPaid = rows.Count(x => x.Status == PayrollStatus.Paid);
+        run.TotalGross = rows.Sum(x => x.GrossSalary);
+        run.TotalDeductions = rows.Sum(x => x.TotalDeductions);
+        run.TotalNet = rows.Sum(x => x.NetSalary);
+        await _db.SaveChangesAsync(ct);
+
+        await _audit.WriteAsync("payroll.generate", "payroll_run", run.Id.ToString(), ct: ct);
+
+        return Ok(new
+        {
+            run,
+            payrolls = generated,
+            skipped = run.Skipped,
+            total = teachers.Count,
+        });
+    }
+
     [HttpPost("generate/teacher")]
     [RequirePrivilege("payroll:manage")]
     public async Task<IActionResult> GenerateTeacher([FromBody] GenerateTeacherRequest req, CancellationToken ct)
