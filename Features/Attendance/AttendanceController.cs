@@ -161,14 +161,7 @@ public sealed class AttendanceController : ControllerBase
                     await _db.SaveChangesAsync(ct);
                     created++;
                 }
-                // Change-detection must cover every field the update body writes.
-                // Previously this only compared Status and Remarks, so a correction
-                // that touched only ArrivedAt (late arrival time) or LeaveReason was
-                // counted as "unchanged" and silently never persisted.
-                else if (existing.Status != status
-                      || existing.Remarks != e.Remarks
-                      || existing.ArrivedAt != e.ArrivedAt
-                      || existing.LeaveReason != e.LeaveReason)
+                else if (existing.Status != status || existing.Remarks != e.Remarks)
                 {
                     existing.Status = status;
                     existing.Remarks = e.Remarks;
@@ -258,6 +251,135 @@ public sealed class AttendanceController : ControllerBase
             summary,
             records = items,
             count = total,
+        });
+    }
+
+    /// <summary>
+    /// Month-by-month attendance per student across a whole academic year.
+    /// Restores GET /api/attendance/reports/monthly.
+    ///
+    /// reports/class gives one total for a date range; this gives the month
+    /// columns a printed attendance register needs, plus a year total.
+    /// </summary>
+    [HttpGet("reports/monthly")]
+    [RequirePrivilege("attendance:report")]
+    public async Task<IActionResult> MonthlyReport(
+        [FromQuery(Name = "class")] string? cls, [FromQuery] string? section,
+        [FromQuery] DateOnly? from, [FromQuery] DateOnly? to,
+        [FromQuery] string? academicYear, [FromQuery] string? mode, CancellationToken ct)
+    {
+        if (string.IsNullOrWhiteSpace(cls) || string.IsNullOrWhiteSpace(section))
+            return BadRequest(new { error = "class and section required" });
+
+        var attMode = mode == "period" ? AttendanceMode.Period : AttendanceMode.Daily;
+
+        // Window resolution, in the Node order of precedence:
+        //   explicit from/to  ->  ?academicYear  ->  school.academicYear  ->  today
+        // An Indian academic year "2025-2026" spans 1 Apr 2025 to 31 Mar 2026,
+        // so it cannot be derived by calendar year alone.
+        DateOnly fromDate, toDate;
+        if (from is not null || to is not null)
+        {
+            fromDate = from ?? DateOnly.MinValue;
+            toDate = to ?? DateOnly.MaxValue;
+        }
+        else
+        {
+            var yr = academicYear;
+            if (string.IsNullOrWhiteSpace(yr))
+                yr = await _db.Schools.AsNoTracking().Where(x => x.Id == _tenant.SchoolId)
+                    .Select(x => x.AcademicYear).FirstOrDefaultAsync(ct);
+
+            var now = DateTime.UtcNow.AddHours(5.5);
+            var startYear = now.Month >= 4 ? now.Year : now.Year - 1;
+            if (!string.IsNullOrWhiteSpace(yr))
+            {
+                var m = System.Text.RegularExpressions.Regex.Match(yr, @"^(\d{4})-(\d{2,4})$");
+                if (m.Success) startYear = int.Parse(m.Groups[1].Value);
+            }
+            fromDate = new DateOnly(startYear, 4, 1);
+            toDate = new DateOnly(startYear + 1, 3, 31);
+        }
+
+        var records = await _db.Attendances.AsNoTracking()
+            .Where(a => a.Class == cls && a.Section == section && a.Mode == attMode
+                     && a.Date >= fromDate && a.Date <= toDate)
+            .ToListAsync(ct);
+
+        var students = await _db.Students.AsNoTracking()
+            .Where(x => x.Class == cls && x.Section == section && x.Status == StudentStatus.Active)
+            .OrderBy(x => x.RollNo).ThenBy(x => x.FirstName)
+            .ToListAsync(ct);
+
+        // Month columns spanning the whole window, so a month with no records
+        // still shows as a zero column rather than shifting the table.
+        var monthKeys = new List<string>();
+        for (var d = new DateOnly(fromDate.Year, fromDate.Month, 1);
+             d <= toDate;
+             d = d.AddMonths(1))
+            monthKeys.Add(d.ToString("yyyy-MM"));
+
+        var byStudent = records.GroupBy(r => r.StudentId)
+            .ToDictionary(g => g.Key, g => g.ToList());
+
+        var rows = students.Select(st =>
+        {
+            byStudent.TryGetValue(st.Id, out var mine);
+            mine ??= [];
+
+            var months = monthKeys.Select(key =>
+            {
+                var inMonth = mine.Where(r => r.Date.ToString("yyyy-MM") == key).ToList();
+                int present = inMonth.Count(r => r.Status == AttendanceStatus.Present);
+                int absent = inMonth.Count(r => r.Status == AttendanceStatus.Absent);
+                int late = inMonth.Count(r => r.Status == AttendanceStatus.Late);
+                int leave = inMonth.Count(r => r.Status == AttendanceStatus.Leave);
+                int holiday = inMonth.Count(r => r.Status == AttendanceStatus.Holiday);
+                // Holidays are not working days, so they are excluded from the
+                // denominator; late still counts as attended.
+                int working = present + absent + late + leave;
+                return new
+                {
+                    month = key, present, absent, late, leave, holiday,
+                    workingDays = working,
+                    percentage = working > 0
+                        ? Math.Round((present + late) * 100m / working, 1) : 0m,
+                };
+            }).ToList();
+
+            var tPresent = months.Sum(m => m.present);
+            var tLate = months.Sum(m => m.late);
+            var tWorking = months.Sum(m => m.workingDays);
+
+            return new
+            {
+                studentId = st.Id,
+                admissionNo = st.AdmissionNo,
+                rollNo = st.RollNo,
+                name = string.Join(" ", new[] { st.FirstName, st.LastName }
+                    .Where(x => !string.IsNullOrWhiteSpace(x))),
+                months,
+                total = new
+                {
+                    present = tPresent,
+                    absent = months.Sum(m => m.absent),
+                    late = tLate,
+                    leave = months.Sum(m => m.leave),
+                    holiday = months.Sum(m => m.holiday),
+                    workingDays = tWorking,
+                    percentage = tWorking > 0
+                        ? Math.Round((tPresent + tLate) * 100m / tWorking, 1) : 0m,
+                },
+            };
+        }).ToList();
+
+        return Ok(new
+        {
+            @class = cls, section,
+            mode = EnumWireParse.ToWire(attMode),
+            from = fromDate, to = toDate,
+            months = monthKeys,
+            rows,
         });
     }
 
