@@ -26,8 +26,25 @@ public sealed class AttendanceConfiguration : IEntityTypeConfiguration<Attendanc
         b.Property(x => x.Class).IsRequired();
         b.Property(x => x.Section).IsRequired();
         b.Property(x => x.Date).HasColumnType("date").IsRequired();
-        b.Property(x => x.Mode).HasColumnName("mode");
+
+        // FIX: Mode is an enum. Without an explicit conversion, EF Core maps it
+        // to `integer` by default — but ck_attendance_period_mode below compares
+        // it against the string literal 'period', which fails at migration time
+        // with "invalid input syntax for type integer: period". Storing as text
+        // makes the column match what the check constraint (and Mongo-port
+        // comments) assume.
+        b.Property(x => x.Mode)
+            .HasColumnName("mode")
+            .HasColumnType("text")
+            .HasConversion<string>()
+            .IsRequired();
+
+        // NOTE: If Status is also an enum and is ever referenced as a string
+        // literal (check constraint, index filter, seed data), apply the same
+        // .HasConversion<string>() here. Leaving as default (int) for now since
+        // no string comparison was found against it in this file.
         b.Property(x => x.Status).HasColumnName("status");
+
         b.Property(x => x.Period).HasColumnType("smallint");
 
         // period ⇔ mode='period'. The Mongo model only had min/max; the mode
