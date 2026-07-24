@@ -47,9 +47,6 @@
     <PackageReference Include="Serilog.AspNetCore" Version="8.0.3" />
 
     <!-- Phase 4 (jobs / PDF / integrations) — uncomment as ported:
-    <PackageReference Include="Hangfire.AspNetCore" Version="1.8.14" />
-    <PackageReference Include="Hangfire.PostgreSql" Version="1.20.9" />
-    <PackageReference Include="QuestPDF" Version="2024.10.3" />
     <PackageReference Include="AWSSDK.S3" Version="3.7.405.4" />
     <PackageReference Include="Twilio" Version="7.5.0" />
     <PackageReference Include="MailKit" Version="4.8.0" />
