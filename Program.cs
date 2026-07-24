@@ -361,6 +361,12 @@ app.UseMiddleware<TokenRevocationMiddleware>();
 
 app.UseAuthorization();
 
+// Strip HTML from free-text JSON fields — parity with the Node app's global
+// app.use(sanitizeBody). Sits AFTER auth so unauthenticated junk is rejected
+// before we spend time rewriting its body, and BEFORE MapControllers so every
+// action sees clean input without per-field guards.
+app.UseSanitizeBody();
+
 app.MapControllers();
 
 // 404 envelope for unmatched /api routes — port of errorHandler.js notFound.
