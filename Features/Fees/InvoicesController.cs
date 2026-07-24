@@ -262,6 +262,114 @@ public sealed class InvoicesController : ControllerBase
         return Ok(new { items, count = items.Count, totalOutstanding = items.Sum(i => i.balance) });
     }
 
+    /// <summary>
+    /// A UPI deep link for the outstanding balance. Restores
+    /// GET /api/invoices/:id/upi-intent — the port dropped it, so the app had
+    /// no way to offer "pay by UPI" without going through Razorpay checkout.
+    ///
+    /// Direct VPA collection needs no gateway account, which is why schools
+    /// use it: the parent taps the link, pays from any UPI app, and the office
+    /// records the payment offline against the same invoice.
+    /// </summary>
+    [HttpGet("{id:guid}/upi-intent")]
+    [RequirePrivilege("fee:view")]
+    public async Task<IActionResult> UpiIntent(Guid id, CancellationToken ct)
+    {
+        var inv = await _db.FeeInvoices.AsNoTracking().FirstOrDefaultAsync(i => i.Id == id, ct);
+        if (inv is null) return NotFound(new { error = "Not found" });
+        if (!await CanAccessInvoiceAsync(inv, ct)) return StatusCode(403, new { error = "Forbidden" });
+
+        if (inv.Status is InvoiceStatus.Paid or InvoiceStatus.Cancelled)
+            return BadRequest(new { error = $"Invoice already {EnumWireParse.ToWire(inv.Status)}", code = "INVOICE_CLOSED" });
+
+        // Fall back to the line arithmetic when Total was never materialised.
+        var effectiveTotal = inv.Total > 0 ? inv.Total
+            : Math.Max(0m, inv.Subtotal + inv.LateFee - inv.Discount);
+        var balance = effectiveTotal - inv.AmountPaid;
+        if (balance <= 0)
+            return BadRequest(new { error = "This invoice has no outstanding balance.", code = "NO_BALANCE" });
+
+        var school = await _db.Schools.AsNoTracking()
+            .Where(x => x.Id == inv.SchoolId)
+            .Select(x => new { x.PaymentVpa, x.PaymentPayeeName, x.Name })
+            .FirstOrDefaultAsync(ct);
+
+        if (string.IsNullOrWhiteSpace(school?.PaymentVpa))
+            return BadRequest(new
+            {
+                error = "UPI payments are not set up for this school yet. Please contact the school office.",
+                code = "UPI_NOT_CONFIGURED",
+            });
+
+        var payeeName = !string.IsNullOrWhiteSpace(school.PaymentPayeeName)
+            ? school.PaymentPayeeName! : school.Name;
+        var note = $"Fee {inv.InvoiceNo}";
+
+        // Spec-compliant UPI deep link. `tr` (transaction ref) ties the payment
+        // back to this invoice when reconciling; `tn` is the human note.
+        // Every value is URL-encoded — a payee name with an ampersand would
+        // otherwise truncate the link silently.
+        var query = string.Join("&", new[]
+        {
+            $"pa={Uri.EscapeDataString(school.PaymentVpa!)}",
+            $"pn={Uri.EscapeDataString(payeeName)}",
+            $"am={balance:F2}",
+            "cu=INR",
+            $"tn={Uri.EscapeDataString(note)}",
+            $"tr={Uri.EscapeDataString(inv.InvoiceNo)}",
+        });
+
+        return Ok(new
+        {
+            upiUri = $"upi://pay?{query}",
+            vpa = school.PaymentVpa,
+            payeeName,
+            amount = balance,
+            currency = "INR",
+            invoiceNo = inv.InvoiceNo,
+            note,
+        });
+    }
+
+    /// <summary>
+    /// Day-by-day collection totals for a trend line. Restores
+    /// GET /api/invoices/reports/daily-trend.
+    ///
+    /// Zero-fills days with no payments: a chart that simply omits them would
+    /// draw a straight line between two distant dates and imply steady
+    /// collection through a week when nothing was taken.
+    /// </summary>
+    [HttpGet("reports/daily-trend")]
+    [RequirePrivilege("fee:report")]
+    public async Task<IActionResult> DailyTrend([FromQuery] int? days, CancellationToken ct)
+    {
+        var window = Math.Clamp(days ?? 30, 1, 365);
+        var startDate = DateOnly.FromDateTime(DateTime.UtcNow.AddHours(5.5).Date).AddDays(-(window - 1));
+        var startUtc = startDate.ToDateTime(TimeOnly.MinValue);
+
+        var grouped = await _db.Payments.AsNoTracking()
+            .Where(p => p.Status == PaymentStatus.Success && p.PaidAt >= startUtc)
+            .GroupBy(p => p.PaidAt.Date)
+            .Select(g => new { Day = g.Key, Total = g.Sum(x => x.Amount), Count = g.Count() })
+            .ToListAsync(ct);
+
+        var map = grouped.ToDictionary(x => DateOnly.FromDateTime(x.Day), x => x);
+
+        var rows = Enumerable.Range(0, window).Select(i =>
+        {
+            var d = startDate.AddDays(i);
+            map.TryGetValue(d, out var hit);
+            return new
+            {
+                date = d.ToString("yyyy-MM-dd"),
+                total = hit?.Total ?? 0m,
+                count = hit?.Count ?? 0,
+            };
+        }).ToList();
+
+        return Ok(new { days = window, rows });
+    }
+
     // ── helpers ───────────────────────────────────────────────────────────
     private async Task<bool> CanAccessInvoiceAsync(FeeInvoice inv, CancellationToken ct)
     {
