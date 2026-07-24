@@ -1,3 +1,4 @@
+using System.Text.RegularExpressions;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.EntityFrameworkCore;
 using QMSoft.Api.Authorization;
@@ -548,17 +549,139 @@ public sealed class PayrollController : ControllerBase
             ? school.LeaveTypes.Select(t => t.Name).ToArray()
             : new[] { "Sick", "Casual", "Earned", "Maternity", "Unpaid" };
 
-        // Heuristic: match a known type name, default a 1-day leave today.
-        var text = req.Text.Trim();
-        var matched = typeNames.FirstOrDefault(n => text.Contains(n, StringComparison.OrdinalIgnoreCase)) ?? typeNames[0];
-        var today = DateOnly.FromDateTime(DateTime.UtcNow);
+        // Port of the Node heuristicParse. The previous .NET version matched a
+        // literal type name and otherwise returned "today, 1 day" — so a
+        // teacher typing "fever, 12th to 14th March" got Casual/today/1 day and
+        // had to retype everything the parser was supposed to save them.
+        //
+        // The Node original also had an optional Claude call in front of this.
+        // Not ported: it needs an API key, a network hop and a cost decision
+        // that is yours to make. The heuristic below is what ran whenever that
+        // key was absent, which was the common case.
+        var parsed = HeuristicParseLeave(req.Text.Trim(), typeNames,
+            DateOnly.FromDateTime(DateTime.UtcNow.AddHours(5.5)));
 
-        return Ok(new
+        return Ok(new { parsed, source = "heuristic", text = req.Text.Trim() });
+    }
+
+    private static object HeuristicParseLeave(string text, string[] typeNames, DateOnly today)
+    {
+        var t = text.ToLowerInvariant();
+
+        string Pick(string pattern, string fallback)
+            => typeNames.FirstOrDefault(n => Regex.IsMatch(n, pattern, RegexOptions.IgnoreCase)) ?? fallback;
+
+        // Symptom and intent keywords, in the Node order of precedence.
+        var type = typeNames.FirstOrDefault() ?? "Casual";
+        if (Regex.IsMatch(t, @"fever|sick|cold|cough|flu|medical|hospital|\bill\b|unwell"))
+            type = Pick("sick", type);
+        else if (Regex.IsMatch(t, @"maternity|pregnan|delivery"))
+            type = Pick("maternity", type);
+        else if (Regex.IsMatch(t, @"vacation|holiday|trip|earned"))
+            type = Pick("earned", type);
+        else if (Regex.IsMatch(t, @"unpaid|lop|loss of pay"))
+            type = Pick("unpaid", type);
+        else
+            type = Pick("casual", type);
+
+        DateOnly? from = null, to = null;
+
+        if (Regex.IsMatch(t, @"\btoday\b")) from = today;
+        if (Regex.IsMatch(t, @"\btomorrow\b")) from = today.AddDays(1);
+        if (Regex.IsMatch(t, @"\byesterday\b")) from = today.AddDays(-1);
+
+        var months = new[] { "jan", "feb", "mar", "apr", "may", "jun",
+                             "jul", "aug", "sep", "oct", "nov", "dec" };
+
+        // "12", "12th", "12/3", "12 March" - day first, optional month.
+        var dateRe = new Regex(
+            @"(\d{1,2})(?:st|nd|rd|th)?(?:[\s/-]+(\d{1,2}|jan(?:uary)?|feb(?:ruary)?|mar(?:ch)?|apr(?:il)?|may|jun(?:e)?|jul(?:y)?|aug(?:ust)?|sep(?:tember)?|oct(?:ober)?|nov(?:ember)?|dec(?:ember)?))?",
+            RegexOptions.IgnoreCase);
+
+        // PASS 1 - collect (day, explicit month or null).
+        var raw = new List<(int Day, int? Month)>();
+        foreach (Match m in dateRe.Matches(t))
         {
-            parsed = new { type = matched, fromDate = today, toDate = today, days = 1m, reason = text, aiUsed = false },
-            source = "heuristic",
-            text,
-        });
+            if (raw.Count >= 4) break;
+            if (!int.TryParse(m.Groups[1].Value, out var day) || day is < 1 or > 31) continue;
+
+            int? mon = null;
+            if (m.Groups[2].Success)
+            {
+                var g = m.Groups[2].Value.ToLowerInvariant();
+                var idx = Array.FindIndex(months, n => g.StartsWith(n));
+                if (idx >= 0) mon = idx + 1;
+                else if (int.TryParse(g, out var mnum) && mnum is >= 1 and <= 12) mon = mnum;
+            }
+            raw.Add((day, mon));
+        }
+
+        var anyExplicitMonth = raw.Any(r => r.Month is not null);
+
+        // PASS 2 - a bare day inherits the month of the NEXT explicit one.
+        // "12th to 14th March" means BOTH are March. Without this the 12th got
+        // today's month, rolled a year forward, and the range came out as 486
+        // days. (The Node original had this bug; it is not a port artefact.)
+        int? carry = null;
+        for (var i = raw.Count - 1; i >= 0; i--)
+        {
+            if (raw[i].Month is not null) carry = raw[i].Month;
+            else if (carry is not null) raw[i] = (raw[i].Day, carry);
+        }
+
+        // PASS 3 - anything still bare uses this month.
+        var found = new List<DateOnly>();
+        foreach (var (day, mon) in raw)
+        {
+            var month = mon ?? today.Month;
+            if (day > DateTime.DaysInMonth(today.Year, month)) continue;   // 31 Feb etc.
+            found.Add(new DateOnly(today.Year, month, day));
+        }
+
+        // PASS 4 - roll only bare-day phrases, and only by ONE MONTH.
+        // "the 3rd" said on the 28th means the 3rd of NEXT month. When a month
+        // was named explicitly we trust it: "12th March" typed in July is a
+        // backdated application, not a booking eight months out.
+        if (!anyExplicitMonth && found.Count > 0 && found.Max() < today)
+        {
+            var rolled = new List<DateOnly>();
+            var ok = true;
+            foreach (var d in found)
+            {
+                var m2 = d.Month + 1;
+                var y2 = d.Year;
+                if (m2 > 12) { m2 = 1; y2++; }
+                if (d.Day > DateTime.DaysInMonth(y2, m2)) { ok = false; break; }
+                rolled.Add(new DateOnly(y2, m2, d.Day));
+            }
+            if (ok) found = rolled;
+        }
+
+        if (found.Count >= 1) from = found[0];
+        if (found.Count >= 2) to = found[^1];
+        from ??= today;
+        to ??= from;
+        if (to < from) (from, to) = (to, from);
+
+        var days = Math.Max(1, to.Value.DayNumber - from.Value.DayNumber + 1);
+
+        // Strip the words the parser consumed so the reason reads naturally.
+        var reason = Regex.Replace(text,
+            @"\b(today|tomorrow|yesterday|sick|casual|leave|on|please|kindly|need|take|apply)\b",
+            " ", RegexOptions.IgnoreCase);
+        reason = Regex.Replace(reason, @"\s{2,}", " ").Trim(' ', ',', '.', '-');
+        if (reason.Length > 80) reason = reason[..77] + "\u2026";
+        if (string.IsNullOrWhiteSpace(reason)) reason = type + " leave";
+
+        return new
+        {
+            type,
+            fromDate = from.Value,
+            toDate = to.Value,
+            days = (decimal)days,
+            reason,
+            aiUsed = false,
+        };
     }
 
     [HttpDelete("leaves/record")]
