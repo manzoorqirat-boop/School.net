@@ -217,9 +217,10 @@ public sealed class PayrollController : ControllerBase
                 }
 
                 var unpaid = await ComputeUnpaidDaysAsync(teacher.Id, req.Year, req.Month, ct);
+                // BuildPayslip takes payrollRunId directly — pass it rather than
+                // assigning afterwards, so the row is complete on construction.
                 var payslip = Domain.Entities.Payroll.BuildPayslip(
-                    ss, teacher, req.Month, req.Year, academicYear, unpaid);
-                payslip.PayrollRunId = run.Id;
+                    ss, teacher, req.Month, req.Year, academicYear, unpaid, run.Id);
                 _db.Payrolls.Add(payslip);
                 generated++;
             }
