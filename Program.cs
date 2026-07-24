@@ -416,25 +416,85 @@ using (var scope = app.Services.CreateScope())
     }
     else
     {
-        // No migrations in the assembly. Create the schema directly from the
-        // model so a fresh environment can boot. EnsureCreated is a no-op when
-        // the tables already exist, so this is safe on the existing database
-        // too — it will not touch or drop anything.
+        // No migrations compiled in. Create the schema from the model.
         //
-        // This is a fallback, not the intended path: EnsureCreated writes no
-        // __EFMigrationsHistory rows, so a later `dotnet ef migrations add`
-        // will need an initial migration baselined against the existing
-        // schema. Generate and commit Migrations/ when you can.
-        bootLog.LogWarning(
-            "No EF migrations are compiled into this build. Falling back to " +
-            "EnsureCreated so the schema exists. Generate and commit " +
-            "Migrations/ (dotnet ef migrations add InitialCreate) for " +
-            "versioned schema changes.");
+        // NOT EnsureCreated: its probe asks "does this database contain ANY
+        // user table in ANY non-system schema", not "do MY tables exist".
+        // AddHangfireServer() provisions the `hangfire` schema during host
+        // startup — before this block runs — so EnsureCreated saw those tables,
+        // concluded the database was already set up, created nothing, and the
+        // app's own tables never appeared. The next statement then died with
+        // 42P01 on `payrolls`.
+        //
+        // Check for a table we actually own, then apply the model's DDL
+        // directly. GenerateCreateScript() emits the same SQL EnsureCreated
+        // would have, including CREATE TYPE for all 28 Postgres enums.
+        bool ours;
+        await using (var probe = new NpgsqlConnection(connString))
+        {
+            await probe.OpenAsync();
+            await using var probeCmd = probe.CreateCommand();
+            probeCmd.CommandText = @"
+                SELECT EXISTS (
+                    SELECT 1 FROM pg_catalog.pg_class c
+                    JOIN pg_catalog.pg_namespace n ON n.oid = c.relnamespace
+                    WHERE n.nspname = 'public' AND c.relname = 'payrolls'
+                )";
+            ours = (bool)(await probeCmd.ExecuteScalarAsync() ?? false);
+        }
 
-        var created = await db.Database.EnsureCreatedAsync();
-        bootLog.LogWarning(created
-            ? "Schema created from the model (fresh database)."
-            : "Schema already present; nothing created.");
+        if (ours)
+        {
+            bootLog.LogInformation("Application schema already present; nothing to create.");
+        }
+        else
+        {
+            bootLog.LogWarning(
+                "No EF migrations are compiled into this build and the application " +
+                "schema is missing. Creating it from the model. Generate and commit " +
+                "Migrations/ (dotnet ef migrations add InitialCreate) for versioned " +
+                "schema changes.");
+
+            var ddl = db.Database.GenerateCreateScript();
+
+            // Idempotent-ish: the script is only run when our tables are absent,
+            // but a partially-created database (a previous boot that failed
+            // halfway) would otherwise stop on the first duplicate. Statements
+            // are applied individually so an "already exists" does not abort the
+            // rest.
+            // Statements are separated by ";" followed by a newline in the
+            // generated script. Split on both line-ending styles so the same
+            // code works regardless of what the generator emitted.
+            var statements = ddl
+                .Replace("\r\n", "\n")
+                .Split(";\n", StringSplitOptions.RemoveEmptyEntries)
+                .Select(x => x.Trim())
+                .Where(x => x.Length > 0)
+                .ToList();
+
+            var applied = 0;
+            var skipped = 0;
+            foreach (var stmt in statements)
+            {
+                try
+                {
+                    await db.Database.ExecuteSqlRawAsync(stmt);
+                    applied++;
+                }
+                catch (Npgsql.PostgresException ex) when (
+                    ex.SqlState is "42P07"    // duplicate_table
+                                or "42710"    // duplicate_object (type, constraint)
+                                or "42P06"    // duplicate_schema
+                                or "42701")   // duplicate_column
+                {
+                    skipped++;
+                }
+            }
+
+            bootLog.LogWarning(
+                "Schema creation complete: {Applied} statement(s) applied, {Skipped} already existed.",
+                applied, skipped);
+        }
     }
 
     // Payroll immutability triggers — applied here instead of inside the
