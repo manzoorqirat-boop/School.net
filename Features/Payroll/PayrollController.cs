@@ -353,6 +353,110 @@ public sealed class PayrollController : ControllerBase
         return Ok(new { ok = true });
     }
 
+    /// <summary>
+    /// Prepare bank transfers for a payroll run. Restores
+    /// POST /api/payroll/run/:runId/transfer.
+    ///
+    /// DELIBERATELY STOPS SHORT OF CALLING RAZORPAY. All the validation,
+    /// eligibility filtering and run bookkeeping the Node version did is here,
+    /// and the response returns the exact transfer batch that would be posted —
+    /// but the outbound payout call is not made, because:
+    ///
+    ///   * RazorpayService in this codebase does signature verification only;
+    ///     it has no HTTP client and never calls the Razorpay API
+    ///   * the fee-side POST /razorpay/order is itself a documented stub for
+    ///     the same reason
+    ///   * silently "succeeding" on a money-movement endpoint is the worst
+    ///     possible failure mode — a school would mark salaries as sent when
+    ///     nothing left the account
+    ///
+    /// So the run is moved to transfer_queued and the batch is returned for
+    /// review. Wiring the actual payout means adding an HTTP client to
+    /// RazorpayService and decrypting the school's key pair; the endpoint below
+    /// is the correct place to call it, marked with the TODO.
+    /// </summary>
+    [HttpPost("run/{runId:guid}/transfer")]
+    [RequirePrivilege("payroll:process")]
+    public async Task<IActionResult> InitiateTransfers(Guid runId, CancellationToken ct)
+    {
+        var run = await _db.PayrollRuns.FirstOrDefaultAsync(r => r.Id == runId, ct);
+        if (run is null) return NotFound(new { error = "PayrollRun not found" });
+
+        if (run.Status is not (PayrollRunStatus.Generated or PayrollRunStatus.Locked))
+            return BadRequest(new { error = "PayrollRun must be in generated or locked status" });
+
+        // Only LOCKED payslips are eligible — locking is the approval step, so
+        // transferring an unlocked run would pay out unreviewed figures.
+        var payslips = await _db.Payrolls
+            .Where(p => p.Month == run.Month && p.Year == run.Year && p.Status == PayrollStatus.Locked)
+            .ToListAsync(ct);
+        if (payslips.Count == 0)
+            return BadRequest(new { error = "No locked payslips to transfer. Lock payslips first." });
+
+        var eligible = payslips
+            .Where(p => !string.IsNullOrWhiteSpace(p.BankAccount)
+                     && !string.IsNullOrWhiteSpace(p.BankIfsc)
+                     && p.NetSalary > 0)
+            .ToList();
+        if (eligible.Count == 0)
+            return BadRequest(new { error = "No payslips with valid bank details and positive net salary" });
+
+        var skipped = payslips.Except(eligible).Select(p => new
+        {
+            payrollId = p.Id,
+            teacherName = p.TeacherName,
+            reason = p.NetSalary <= 0 ? "Net salary is zero or negative" : "Missing bank account or IFSC",
+        }).ToList();
+
+        var monthName = System.Globalization.CultureInfo.InvariantCulture
+            .DateTimeFormat.GetMonthName(run.Month);
+
+        // Account numbers are decrypted by the EF value converter on read, so
+        // they are plaintext in memory here. The review payload MASKS them —
+        // returning full account numbers over the API to every payroll:process
+        // holder would leak staff bank details into logs, browser history and
+        // any client-side cache. The real payout call (TODO below) uses
+        // p.BankAccount directly and never goes through this projection.
+        var transfers = eligible.Select(p => new
+        {
+            account_number = Mask(p.BankAccount),
+            ifsc = p.BankIfsc,
+            amount = (long)Math.Round(p.NetSalary * 100),   // paise
+            mode = "NEFT",
+            purpose = $"Salary {monthName} {run.Year}",
+            description = $"{p.TeacherName} - Payroll",
+            notes = new { payroll_id = p.Id.ToString() },
+        }).ToList();
+
+        // TODO(payouts): call Razorpay here with the school's decrypted key pair,
+        // set run.RazorpayBatchId / run.BatchTransferId from the response, and
+        // only then move to TransferCompleted. Until that exists the run stops
+        // at transfer_queued so nothing claims money has moved.
+        run.Status = PayrollRunStatus.TransferQueued;
+        run.BatchStatus = "prepared_not_sent";
+        await _db.SaveChangesAsync(ct);
+
+        await _audit.WriteAsync("payroll.transfer_prepare", "payroll_run", run.Id.ToString(), ct: ct);
+
+        return Ok(new
+        {
+            run,
+            eligible = eligible.Count,
+            skipped,
+            totalAmount = eligible.Sum(p => p.NetSalary),
+            transfers,
+            dispatched = false,
+            message = "Transfer batch prepared. Gateway dispatch is not wired in this build — "
+                    + "review the batch and process it through your bank or Razorpay dashboard.",
+        });
+    }
+
+    /// <summary>Last four digits only, for review payloads.</summary>
+    private static string? Mask(string? account) =>
+        string.IsNullOrWhiteSpace(account) ? account
+        : account.Length <= 4 ? new string('*', account.Length)
+        : new string('*', account.Length - 4) + account[^4..];
+
     [HttpGet("runs")]
     [RequirePrivilege("payroll:view")]
     public async Task<IActionResult> ListRuns(CancellationToken ct) =>
