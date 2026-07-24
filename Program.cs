@@ -397,13 +397,66 @@ await using (var boot = new NpgsqlConnection(connString))
 using (var scope = app.Services.CreateScope())
 {
     var db = scope.ServiceProvider.GetRequiredService<AppDbContext>();
-    await db.Database.MigrateAsync();
+    var bootLog = scope.ServiceProvider.GetRequiredService<ILoggerFactory>().CreateLogger("Boot");
+
+    // MigrateAsync() applies the migrations COMPILED INTO THIS ASSEMBLY. If the
+    // Migrations/ folder was never generated there are zero of them, EF finds
+    // nothing pending and logs the very misleading "No migrations were applied.
+    // The database is already up to date." — up to date with an empty set.
+    //
+    // On a database that already has tables (the original deploy) nothing
+    // notices. On a FRESH Postgres nothing creates the schema at all, and the
+    // first statement to touch a real table dies with 42P01. Check explicitly
+    // rather than letting that surface as a confusing trigger error.
+    var hasMigrations = db.Database.GetMigrations().Any();
+
+    if (hasMigrations)
+    {
+        await db.Database.MigrateAsync();
+    }
+    else
+    {
+        // No migrations in the assembly. Create the schema directly from the
+        // model so a fresh environment can boot. EnsureCreated is a no-op when
+        // the tables already exist, so this is safe on the existing database
+        // too — it will not touch or drop anything.
+        //
+        // This is a fallback, not the intended path: EnsureCreated writes no
+        // __EFMigrationsHistory rows, so a later `dotnet ef migrations add`
+        // will need an initial migration baselined against the existing
+        // schema. Generate and commit Migrations/ when you can.
+        bootLog.LogWarning(
+            "No EF migrations are compiled into this build. Falling back to " +
+            "EnsureCreated so the schema exists. Generate and commit " +
+            "Migrations/ (dotnet ef migrations add InitialCreate) for " +
+            "versioned schema changes.");
+
+        var created = await db.Database.EnsureCreatedAsync();
+        bootLog.LogWarning(created
+            ? "Schema created from the model (fresh database)."
+            : "Schema already present; nothing created.");
+    }
 
     // Payroll immutability triggers — applied here instead of inside the
     // migration so a regenerated InitialCreate never silently drops them.
     // Idempotent: CREATE OR REPLACE FUNCTION + DROP TRIGGER IF EXISTS.
-    await db.Database.ExecuteSqlRawAsync(
-        QMSoft.Api.Data.Configurations.PayrollTriggerSql.UpAll);
+    //
+    // Guarded: if the schema is somehow still absent this must not take the
+    // whole container down in a crash-loop. A missing trigger degrades payroll
+    // immutability; a boot loop takes the entire API offline. Log loudly and
+    // keep serving.
+    try
+    {
+        await db.Database.ExecuteSqlRawAsync(
+            QMSoft.Api.Data.Configurations.PayrollTriggerSql.UpAll);
+    }
+    catch (Npgsql.PostgresException ex) when (ex.SqlState == "42P01")
+    {
+        bootLog.LogError(ex,
+            "Could not install the payroll immutability triggers: the payrolls " +
+            "table does not exist. The schema was not created. Check that " +
+            "Migrations/ is committed, or that EnsureCreated succeeded.");
+    }
 }
 
 // Idempotent — safe on every boot, which is what makes it usable as a Railway
