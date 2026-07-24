@@ -41,6 +41,10 @@ public sealed class DatabaseSeeder
     /// <summary>
     /// Seed__* : provision the platform superadmin from env.
     ///
+    /// Note: .NET's environment-variable config provider maps "Seed__X" (double
+    /// underscore) env vars into the IConfiguration key "Seed:X" (colon). Lookups
+    /// here must use the colon form, or they will never match the env var.
+    ///
     /// Deviation from seed.js: it defaults the password to 'Super@123'. That is
     /// fine for a local script but this runs on Railway boot, where a default
     /// password on a superadmin account is a publicly-known credential with
@@ -48,11 +52,11 @@ public sealed class DatabaseSeeder
     /// </summary>
     private async Task SeedSuperAdminAsync(CancellationToken ct)
     {
-        var username = _cfg["Seed__SuperAdminUsername"]
+        var username = _cfg["Seed:SuperAdminUsername"]
                        ?? _cfg["SEED_SUPERADMIN_USERNAME"]
                        ?? "superadmin";
 
-        var password = _cfg["Seed__SuperAdminPassword"]
+        var password = _cfg["Seed:SuperAdminPassword"]
                        ?? _cfg["SEED_SUPERADMIN_PASSWORD"];
 
         var existing = await _db.Users
@@ -98,8 +102,8 @@ public sealed class DatabaseSeeder
     /// </summary>
     private async Task RescueAsync(CancellationToken ct)
     {
-        var username = _cfg["Rescue__Username"];
-        var password = _cfg["Rescue__Password"];
+        var username = _cfg["Rescue:Username"];
+        var password = _cfg["Rescue:Password"];
 
         if (string.IsNullOrWhiteSpace(username) || string.IsNullOrWhiteSpace(password))
             return;
