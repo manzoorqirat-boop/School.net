@@ -3,7 +3,6 @@ using System.Reflection;
 using Microsoft.EntityFrameworkCore;
 using QMSoft.Api.Data.Configurations;
 using QMSoft.Api.Domain.Entities;
-using QMSoft.Api.Infrastructure;
 using QMSoft.Api.Infrastructure.Crypto;
 using QMSoft.Api.Infrastructure.Tenancy;
 
@@ -81,53 +80,56 @@ public class AppDbContext : DbContext
 
         // Native Postgres enums.
         //
-        // FIX (2nd pass): HasPostgresEnum<TEnum>() does NOT accept a labels
-        // array — its real signature is
-        //     HasPostgresEnum<TEnum>(schema, name, nameTranslator)
-        // It derives labels itself by calling nameTranslator.TranslateMemberName
-        // on each CLR member name. Passing a string[] as if it were a second
-        // positional/labels argument doesn't compile against this overload
-        // (that's the CS1729/CS0029 pile from the last attempt) — the compiler
-        // was trying to fit the array into the `name`/`nameTranslator` slot.
-        //
-        // The previous plain `HasPostgresEnum("name", [...])` call (no <T>) DID
-        // compile, but only registers the enum TYPE in Postgres — it never
-        // links the CLR enum to it, so EF Core still defaulted every property
-        // of that type to `integer`, which is the original bug.
-        //
-        // Fix: use the generic overload with the SAME EnumMemberNameTranslator
-        // already defined in Infrastructure/EnumMemberNameTranslator.cs and
-        // already used for the client-side NpgsqlDataSourceBuilder.MapEnum<T>()
-        // calls in Program.cs. It reads each member's [EnumMember(Value=...)]
-        // attribute from Enums.cs — the single source of truth — so labels
-        // never need to be hand-typed (or drift) here at all.
-        b.HasPostgresEnum<UserRole>(name: "user_role", nameTranslator: EnumMemberNameTranslator.For<UserRole>());
-        b.HasPostgresEnum<SchoolType>(name: "school_type", nameTranslator: EnumMemberNameTranslator.For<SchoolType>());
-        b.HasPostgresEnum<SchoolPlan>(name: "school_plan", nameTranslator: EnumMemberNameTranslator.For<SchoolPlan>());
-        b.HasPostgresEnum<StudentStatus>(name: "student_status", nameTranslator: EnumMemberNameTranslator.For<StudentStatus>());
-        b.HasPostgresEnum<Gender>(name: "gender", nameTranslator: EnumMemberNameTranslator.For<Gender>());
-        b.HasPostgresEnum<StudentCategory>(name: "student_category", nameTranslator: EnumMemberNameTranslator.For<StudentCategory>());
-        b.HasPostgresEnum<Religion>(name: "religion", nameTranslator: EnumMemberNameTranslator.For<Religion>());
-        b.HasPostgresEnum<TransportMode>(name: "transport_mode", nameTranslator: EnumMemberNameTranslator.For<TransportMode>());
-        b.HasPostgresEnum<SiblingRelation>(name: "sibling_relation", nameTranslator: EnumMemberNameTranslator.For<SiblingRelation>());
-        b.HasPostgresEnum<AttendanceStatus>(name: "attendance_status", nameTranslator: EnumMemberNameTranslator.For<AttendanceStatus>());
-        b.HasPostgresEnum<AttendanceMode>(name: "attendance_mode", nameTranslator: EnumMemberNameTranslator.For<AttendanceMode>());
-        b.HasPostgresEnum<TeacherAttendanceStatus>(name: "teacher_attendance_status", nameTranslator: EnumMemberNameTranslator.For<TeacherAttendanceStatus>());
-        b.HasPostgresEnum<ExamType>(name: "exam_type", nameTranslator: EnumMemberNameTranslator.For<ExamType>());
-        b.HasPostgresEnum<ExamStatus>(name: "exam_status", nameTranslator: EnumMemberNameTranslator.For<ExamStatus>());
-        b.HasPostgresEnum<ExamResultStatus>(name: "exam_result_status", nameTranslator: EnumMemberNameTranslator.For<ExamResultStatus>());
-        b.HasPostgresEnum<GradingScaleType>(name: "grading_scale_type", nameTranslator: EnumMemberNameTranslator.For<GradingScaleType>());
-        b.HasPostgresEnum<FeeFrequency>(name: "fee_frequency", nameTranslator: EnumMemberNameTranslator.For<FeeFrequency>());
-        b.HasPostgresEnum<InvoiceStatus>(name: "invoice_status", nameTranslator: EnumMemberNameTranslator.For<InvoiceStatus>());
-        b.HasPostgresEnum<PaymentMethod>(name: "payment_method", nameTranslator: EnumMemberNameTranslator.For<PaymentMethod>());
-        b.HasPostgresEnum<PaymentStatus>(name: "payment_status", nameTranslator: EnumMemberNameTranslator.For<PaymentStatus>());
-        b.HasPostgresEnum<TimetableStatus>(name: "timetable_status", nameTranslator: EnumMemberNameTranslator.For<TimetableStatus>());
-        b.HasPostgresEnum<VariationType>(name: "variation_type", nameTranslator: EnumMemberNameTranslator.For<VariationType>());
-        b.HasPostgresEnum<PayrollStatus>(name: "payroll_status", nameTranslator: EnumMemberNameTranslator.For<PayrollStatus>());
-        b.HasPostgresEnum<PayrollRunStatus>(name: "payroll_run_status", nameTranslator: EnumMemberNameTranslator.For<PayrollRunStatus>());
-        b.HasPostgresEnum<LeaveStatus>(name: "leave_status", nameTranslator: EnumMemberNameTranslator.For<LeaveStatus>());
-        b.HasPostgresEnum<PollStatus>(name: "poll_status", nameTranslator: EnumMemberNameTranslator.For<PollStatus>());
-        b.HasPostgresEnum<PollCategory>(name: "poll_category", nameTranslator: EnumMemberNameTranslator.For<PollCategory>());
+        // ⚠️ Labels are passed EXPLICITLY. The parameterless HasPostgresEnum<T>()
+        // derives labels by snake_casing the CLR member names — the exact rule
+        // that produces 'super_admin', 'g_e_n' and 'hindu' instead of
+        // 'superadmin', 'GEN' and 'Hindu'. The DB labels must match the wire
+        // values in Enums.cs, or Npgsql throws on every read.
+        b.HasPostgresEnum("user_role",
+            ["superadmin", "school_admin", "principal", "accountant",
+             "teacher", "parent", "student"]);
+        b.HasPostgresEnum("school_type", ["k12", "coaching", "college", "other"]);
+        b.HasPostgresEnum("school_plan", ["trial", "basic", "pro", "enterprise"]);
+        b.HasPostgresEnum("student_status",
+            ["active", "inactive", "transferred", "graduated"]);
+        b.HasPostgresEnum("gender", ["male", "female", "other"]);
+        b.HasPostgresEnum("student_category", ["GEN", "OBC", "SC", "ST", "EWS"]);
+        b.HasPostgresEnum("religion",
+            ["Hindu", "Muslim", "Sikh", "Christian", "Buddhist", "Jain", "Other"]);
+        b.HasPostgresEnum("transport_mode", ["self", "school_bus", "walk", "other"]);
+        b.HasPostgresEnum("sibling_relation", ["brother", "sister"]);
+        b.HasPostgresEnum("attendance_status",
+            ["present", "absent", "late", "leave", "holiday"]);
+        b.HasPostgresEnum("attendance_mode", ["daily", "period"]);
+        b.HasPostgresEnum("teacher_attendance_status",
+            ["present", "absent", "half_day", "leave", "unpaid_leave",
+             "on_duty", "holiday"]);
+        b.HasPostgresEnum("exam_type",
+            ["unit_test", "periodic", "term", "half_yearly", "annual", "custom"]);
+        b.HasPostgresEnum("exam_status",
+            ["draft", "scheduled", "in_progress", "completed", "published"]);
+        b.HasPostgresEnum("exam_result_status", ["absent", "present", "exempt"]);
+        b.HasPostgresEnum("grading_scale_type", ["marks", "grade", "gpa", "pass_fail"]);
+        b.HasPostgresEnum("fee_frequency",
+            ["one_time", "monthly", "quarterly", "half_yearly", "annual"]);
+        b.HasPostgresEnum("invoice_status",
+            ["pending", "partial", "paid", "overdue", "cancelled"]);
+        b.HasPostgresEnum("payment_method",
+            ["cash", "cheque", "upi", "card", "bank_transfer", "razorpay"]);
+        b.HasPostgresEnum("payment_status",
+            ["pending", "success", "failed", "refunded"]);
+        b.HasPostgresEnum("timetable_status", ["draft", "active", "archived"]);
+        b.HasPostgresEnum("variation_type",
+            ["substitute_teacher", "cancelled", "rescheduled", "guest_lecture", "custom"]);
+        b.HasPostgresEnum("payroll_status",
+            ["draft", "generated", "locked", "paid", "failed"]);
+        b.HasPostgresEnum("payroll_run_status",
+            ["draft", "generated", "locked", "transfer_queued",
+             "transfer_completed", "cancelled"]);
+        b.HasPostgresEnum("leave_status", ["pending", "approved", "rejected"]);
+        b.HasPostgresEnum("poll_status", ["draft", "active", "closed"]);
+        b.HasPostgresEnum("poll_category",
+            ["satisfaction", "event", "canteen", "general"]);
 
         // SchoolConfiguration needs ICryptoService, so it cannot be discovered by
         // ApplyConfigurationsFromAssembly (which requires a parameterless ctor).
