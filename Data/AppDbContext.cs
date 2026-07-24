@@ -80,22 +80,11 @@ public class AppDbContext : DbContext
 
         // Native Postgres enums.
         //
-        // ⚠️ Labels are passed EXPLICITLY via the NON-GENERIC overload. The
-        // generic HasPostgresEnum<TEnum>(schema, name) overload does NOT accept
-        // a labels array in this provider version — its second parameter is
-        // `name`, not `labels` — so passing an array there is a compile error,
-        // not a silent behavior change. This non-generic form just declares the
-        // Postgres enum TYPE (with our chosen labels) so migrations can
-        // CREATE TYPE it correctly.
-        //
-        // ⚠️ This alone does NOT link the type to a CLR enum for column
-        // generation — that link is made separately, via
-        // `npg.MapEnum<TEnum>(pgName, translator)` inside the
-        // `opt.UseNpgsql(dataSource, npg => ...)` callback in Program.cs. That
-        // is what makes EF generate `mode <enum_type>` columns instead of
-        // defaulting to `integer`, and what makes raw-SQL check constraints
-        // written against text labels (e.g. "mode = 'period'") actually match
-        // the stored representation.
+        // ⚠️ Labels are passed EXPLICITLY. The parameterless HasPostgresEnum<T>()
+        // derives labels by snake_casing the CLR member names — the exact rule
+        // that produces 'super_admin', 'g_e_n' and 'hindu' instead of
+        // 'superadmin', 'GEN' and 'Hindu'. The DB labels must match the wire
+        // values in Enums.cs, or Npgsql throws on every read.
         b.HasPostgresEnum("user_role",
             ["superadmin", "school_admin", "principal", "accountant",
              "teacher", "parent", "student"]);
