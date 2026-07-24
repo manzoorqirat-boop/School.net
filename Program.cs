@@ -494,6 +494,17 @@ using (var scope = app.Services.CreateScope())
             bootLog.LogWarning(
                 "Schema creation complete: {Applied} statement(s) applied, {Skipped} already existed.",
                 applied, skipped);
+
+            // Fail loudly rather than limping on. If the script produced nothing
+            // (or everything was skipped) the tables still do not exist, and the
+            // next thing to run is the seeder, which would die on `users` with a
+            // stack trace that points at the wrong place entirely.
+            if (applied == 0)
+                throw new InvalidOperationException(
+                    "Schema creation produced no applied statements. The database is " +
+                    "still empty and startup cannot continue. GenerateCreateScript() " +
+                    "returned " + ddl.Length + " characters / " + statements.Count +
+                    " statement(s).");
         }
     }
 
