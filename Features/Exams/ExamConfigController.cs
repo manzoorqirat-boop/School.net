@@ -4,6 +4,7 @@ using QMSoft.Api.Authorization;
 using QMSoft.Api.Common;
 using QMSoft.Api.Data;
 using QMSoft.Api.Domain.Entities;
+using QMSoft.Api.Features.Documents;
 using QMSoft.Api.Infrastructure.Tenancy;
 
 namespace QMSoft.Api.Features.Exams;
@@ -170,7 +171,66 @@ public sealed class ReportCardsController : ControllerBase
     [RequirePrivilege("exam:view")]
     public async Task<IActionResult> StudentReportCard(Guid studentId, [FromQuery] string? academicYear, [FromQuery] Guid? examId, CancellationToken ct)
     {
-        // Row-scope: parent/student can only see their own. Staff fall through.
+        var guard = await AuthoriseAsync(studentId, ct);
+        if (guard is not null) return guard;
+
+        var built = await BuildAsync(studentId, academicYear, examId, ct);
+        if (built is null) return NotFound(new { error = "Not found" });
+        return Ok(built.Payload);
+    }
+
+    /// <summary>
+    /// The same card as a PDF. Restores GET /api/report-cards/student/:id/pdf
+    /// from the Node backend — the port dropped the endpoint entirely, so
+    /// there was no printable report card at all.
+    /// </summary>
+    [HttpGet("student/{studentId:guid}/pdf")]
+    [RequirePrivilege("exam:view")]
+    public async Task<IActionResult> StudentReportCardPdf(Guid studentId, [FromQuery] string? academicYear, [FromQuery] Guid? examId, CancellationToken ct)
+    {
+        var guard = await AuthoriseAsync(studentId, ct);
+        if (guard is not null) return guard;
+
+        var b = await BuildAsync(studentId, academicYear, examId, ct);
+        if (b is null) return NotFound(new { error = "Not found" });
+
+        var st = b.Student;
+        var addr = string.Join(", ", new[] { b.School?.Address, b.School?.City, b.School?.State, b.School?.Pincode }
+            .Where(x => !string.IsNullOrWhiteSpace(x)));
+
+        var data = new ReportCardData(
+            SchoolName: b.School?.Name ?? "School",
+            SchoolAddressLine: addr.Length > 0 ? addr : null,
+            StudentName: string.Join(" ", new[] { st.FirstName, st.LastName }
+                .Where(x => !string.IsNullOrWhiteSpace(x))),
+            AdmissionNo: st.AdmissionNo,
+            ClassLabel: st.Class + (string.IsNullOrWhiteSpace(st.Section) ? "" : " - " + st.Section),
+            RollNo: st.RollNo,
+            FatherName: st.FatherName,
+            MotherName: st.MotherName,
+            AcademicYear: b.Year,
+            Exams: b.Exams.Select(e => new RcExam(
+                e.Exam.Name,
+                EnumWireParse.ToWire(e.Exam.Type),
+                e.Exam.FromDate, e.Exam.ToDate,
+                e.Subjects.Select(x => new RcSubject(
+                    x.SubjectName, x.MaxMarks, x.MarksObtained,
+                    x.Percentage, x.Grade, x.Gpa, x.Status, x.IsPassing)).ToList(),
+                e.TotalObtained, e.TotalMax, e.OverallPct, e.OverallGrade)).ToList(),
+            Composite: b.Composite is null ? null : new RcComposite(
+                b.CompositeWeights,
+                b.Composite.Select(c => new RcCompositeSubject(c.SubjectName, c.FinalPercentage)).ToList(),
+                b.CompositeOverall));
+
+        var safe = new string((data.StudentName ?? "student")
+            .Select(ch => char.IsLetterOrDigit(ch) ? ch : '-').ToArray());
+        return File(ReportCardPdf.Build(data), "application/pdf", $"report-card-{safe}.pdf");
+    }
+
+    /// <summary>Row-scope guard shared by the JSON and PDF endpoints. Returns
+    /// null when the caller is allowed through.</summary>
+    private async Task<IActionResult?> AuthoriseAsync(Guid studentId, CancellationToken ct)
+    {
         if (_tenant.Role == "parent")
         {
             var owned = await _db.Users.IgnoreQueryFilters().Where(u => u.Id == _tenant.UserId)
@@ -179,9 +239,18 @@ public sealed class ReportCardsController : ControllerBase
         }
         if (_tenant.Role == "student" && _tenant.StudentId != studentId)
             return StatusCode(403, new { error = "Forbidden" });
+        return null;
+    }
 
+    /// <summary>
+    /// Assembles the report card once. The JSON endpoint serialises
+    /// <c>Payload</c>; the PDF endpoint reads the typed fields. Keeping one
+    /// builder means the printed card can never drift from the on-screen one.
+    /// </summary>
+    private async Task<BuiltCard?> BuildAsync(Guid studentId, string? academicYear, Guid? examId, CancellationToken ct)
+    {
         var student = await _db.Students.AsNoTracking().FirstOrDefaultAsync(s => s.Id == studentId, ct);
-        if (student is null) return NotFound(new { error = "Not found" });
+        if (student is null) return null;
 
         var year = string.IsNullOrWhiteSpace(academicYear) ? student.AcademicYear : academicYear;
 
@@ -247,6 +316,11 @@ public sealed class ReportCardsController : ControllerBase
         // of every subject's percentage. Only exams that declare a weight take
         // part, so a school not using weights simply gets composite = null.
         object? composite = null;
+        // Hoisted so BuiltCard can hand the typed rows to the PDF builder
+        // without recomputing them.
+        List<CompositeSubject>? compositeTyped = null;
+        decimal compositeWeights = 0;
+        decimal compositeOverall = 0;
         var weighted = examData.Where(e => e.Exam.WeightInFinal > 0).ToList();
         if (weighted.Count > 0)
         {
@@ -278,6 +352,10 @@ public sealed class ReportCardsController : ControllerBase
                 ? Math.Round(compositeSubjects.Sum(x => x.FinalPercentage) / compositeSubjects.Count, 1)
                 : 0m;
 
+            compositeTyped = compositeSubjects;
+            compositeWeights = sumWeights;
+            compositeOverall = overallFinal;
+
             composite = new
             {
                 sumWeights,
@@ -290,14 +368,22 @@ public sealed class ReportCardsController : ControllerBase
             };
         }
 
+        // Typed, not anonymous: the PDF builder needs to read these fields back,
+        // and an anonymous type cannot cross a method boundary usefully.
         var school = await _db.Schools.AsNoTracking()
             .Where(s => s.Id == _tenant.SchoolId)
-            .Select(s => new { s.Name, s.NameHindi, s.Address, s.City, s.State, s.Pincode, s.LogoUrl, s.AcademicYear })
+            .Select(s => new SchoolHeader(s.Name, s.NameHindi, s.Address, s.City, s.State, s.Pincode, s.LogoUrl, s.AcademicYear))
             .FirstOrDefaultAsync(ct);
 
-        return Ok(new
+        var payload = new
         {
-            school,
+            school = school is null ? null : new
+            {
+                name = school.Name, nameHindi = school.NameHindi,
+                address = school.Address, city = school.City, state = school.State,
+                pincode = school.Pincode, logoUrl = school.LogoUrl,
+                academicYear = school.AcademicYear,
+            },
             student = new
             {
                 _id = student.Id, student.AdmissionNo, student.RollNo,
@@ -332,8 +418,20 @@ public sealed class ReportCardsController : ControllerBase
                 },
             }),
             composite,
-        });
+        };
+
+        return new BuiltCard(payload, student, school, year, examData,
+            compositeTyped, compositeWeights, compositeOverall);
     }
+
+    private sealed record SchoolHeader(
+        string Name, string? NameHindi, string? Address, string? City,
+        string? State, string? Pincode, string? LogoUrl, string AcademicYear);
+
+    private sealed record BuiltCard(
+        object Payload, Student Student, SchoolHeader? School, string Year,
+        List<ExamCard> Exams, List<CompositeSubject>? Composite,
+        decimal CompositeWeights, decimal CompositeOverall);
 
     private sealed record CompositeSubject(Guid SubjectId, string SubjectName, decimal FinalPercentage);
 
