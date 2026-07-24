@@ -134,6 +134,45 @@ builder.Services.AddDbContext<AppDbContext>(opt =>
     {
         npg.EnableRetryOnFailure(3, TimeSpan.FromSeconds(2), null);
         npg.MigrationsAssembly(typeof(AppDbContext).Assembly.FullName);
+
+        // ── EF model-level enum mapping ─────────────────────────────────
+        // The dsb.MapEnum<T> calls above only teach the raw ADO.NET
+        // connection how to read/write these enums on the wire — they do
+        // NOT tell EF Core's MODEL that a given entity property should be
+        // treated as a native Postgres enum type. Without the calls below,
+        // EF's migration generator defaults every enum property to a plain
+        // `integer` column, which desyncs from any raw SQL (check
+        // constraints, triggers) written assuming the text label is stored
+        // (e.g. "mode = 'period'"), and causes
+        // `22P02: invalid input syntax for type integer: "..."` at migration
+        // time. Same (CLR type, pg name, translator) pairs as above.
+        npg.MapEnum<UserRole>("user_role", EnumMemberNameTranslator.For<UserRole>());
+        npg.MapEnum<SchoolType>("school_type", EnumMemberNameTranslator.For<SchoolType>());
+        npg.MapEnum<SchoolPlan>("school_plan", EnumMemberNameTranslator.For<SchoolPlan>());
+        npg.MapEnum<StudentStatus>("student_status", EnumMemberNameTranslator.For<StudentStatus>());
+        npg.MapEnum<Gender>("gender", EnumMemberNameTranslator.For<Gender>());
+        npg.MapEnum<StudentCategory>("student_category", EnumMemberNameTranslator.For<StudentCategory>());
+        npg.MapEnum<Religion>("religion", EnumMemberNameTranslator.For<Religion>());
+        npg.MapEnum<TransportMode>("transport_mode", EnumMemberNameTranslator.For<TransportMode>());
+        npg.MapEnum<SiblingRelation>("sibling_relation", EnumMemberNameTranslator.For<SiblingRelation>());
+        npg.MapEnum<AttendanceStatus>("attendance_status", EnumMemberNameTranslator.For<AttendanceStatus>());
+        npg.MapEnum<AttendanceMode>("attendance_mode", EnumMemberNameTranslator.For<AttendanceMode>());
+        npg.MapEnum<TeacherAttendanceStatus>("teacher_attendance_status", EnumMemberNameTranslator.For<TeacherAttendanceStatus>());
+        npg.MapEnum<ExamType>("exam_type", EnumMemberNameTranslator.For<ExamType>());
+        npg.MapEnum<ExamStatus>("exam_status", EnumMemberNameTranslator.For<ExamStatus>());
+        npg.MapEnum<ExamResultStatus>("exam_result_status", EnumMemberNameTranslator.For<ExamResultStatus>());
+        npg.MapEnum<GradingScaleType>("grading_scale_type", EnumMemberNameTranslator.For<GradingScaleType>());
+        npg.MapEnum<FeeFrequency>("fee_frequency", EnumMemberNameTranslator.For<FeeFrequency>());
+        npg.MapEnum<InvoiceStatus>("invoice_status", EnumMemberNameTranslator.For<InvoiceStatus>());
+        npg.MapEnum<PaymentMethod>("payment_method", EnumMemberNameTranslator.For<PaymentMethod>());
+        npg.MapEnum<PaymentStatus>("payment_status", EnumMemberNameTranslator.For<PaymentStatus>());
+        npg.MapEnum<TimetableStatus>("timetable_status", EnumMemberNameTranslator.For<TimetableStatus>());
+        npg.MapEnum<VariationType>("variation_type", EnumMemberNameTranslator.For<VariationType>());
+        npg.MapEnum<PayrollStatus>("payroll_status", EnumMemberNameTranslator.For<PayrollStatus>());
+        npg.MapEnum<PayrollRunStatus>("payroll_run_status", EnumMemberNameTranslator.For<PayrollRunStatus>());
+        npg.MapEnum<LeaveStatus>("leave_status", EnumMemberNameTranslator.For<LeaveStatus>());
+        npg.MapEnum<PollStatus>("poll_status", EnumMemberNameTranslator.For<PollStatus>());
+        npg.MapEnum<PollCategory>("poll_category", EnumMemberNameTranslator.For<PollCategory>());
     });
 
     // Columns/keys in snake_case (school_id, amount_paid…). Explicit
