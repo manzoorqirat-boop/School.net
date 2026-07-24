@@ -118,6 +118,32 @@ public sealed class FeeOnlineController : ControllerBase
 
         var installment = fs.Installments.FirstOrDefault(i => i.Name == req.InstallmentName);
         var annualTotal = fs.TotalAmount(includeOptional: false);
+
+        // Refuse to create zero-value invoices.
+        //
+        // Previously a structure whose heads were all optional, all zero, or
+        // simply absent produced N invoices of Total = 0. The dashboard then
+        // showed "Outstanding: 0" and everything looked like it had worked —
+        // the worst outcome, because the error only surfaces when a parent is
+        // never billed. Say exactly which of the three it was.
+        if (annualTotal <= 0)
+        {
+            var billable = fs.Heads.Count(h => !h.IsOptional);
+            var reason =
+                fs.Heads.Count == 0 ? "it has no fee heads"
+                : billable == 0     ? "every fee head is marked optional"
+                :                     "every non-optional fee head has an amount of 0";
+            return BadRequest(new
+            {
+                error = $"Fee structure \"{fs.Name}\" totals \u20b90 because {reason}. "
+                      + "Fix the structure before generating invoices.",
+                code = "FEE_STRUCTURE_EMPTY",
+                heads = fs.Heads.Count,
+                billableHeads = billable,
+                annualTotal,
+            });
+        }
+
         var amount = installment is not null ? Math.Round(annualTotal * installment.Percentage / 100m, 2) : annualTotal;
         var dueDate = installment?.DueDate ?? DateOnly.FromDateTime(DateTime.UtcNow.AddDays(30));
 
