@@ -301,7 +301,7 @@ public sealed class AttendanceController : ControllerBase
             toDate = new DateOnly(startYear + 1, 3, 31);
         }
 
-        var records = await _db.Attendances.AsNoTracking()
+        var records = await _db.Attendance.AsNoTracking()
             .Where(a => a.Class == cls && a.Section == section && a.Mode == attMode
                      && a.Date >= fromDate && a.Date <= toDate)
             .ToListAsync(ct);
