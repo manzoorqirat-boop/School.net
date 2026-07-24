@@ -85,50 +85,63 @@ public class AppDbContext : DbContext
         // that produces 'super_admin', 'g_e_n' and 'hindu' instead of
         // 'superadmin', 'GEN' and 'Hindu'. The DB labels must match the wire
         // values in Enums.cs, or Npgsql throws on every read.
-        b.HasPostgresEnum("user_role",
+        //
+        // ⚠️ MUST use the GENERIC HasPostgresEnum<TEnum>(name, labels) overload,
+        // not the non-generic HasPostgresEnum(name, labels). The non-generic
+        // form only registers the Postgres enum TYPE for migration purposes —
+        // it does NOT associate it with the CLR enum, so every property of that
+        // enum type silently falls back to a plain `integer` column. That
+        // mismatched with the native-enum mapping registered on the
+        // NpgsqlDataSourceBuilder in Program.cs (dsb.MapEnum<T>(...)), and with
+        // any raw-SQL check constraint written against the text label (e.g.
+        // "mode = 'period'"), which caused
+        // `22P02: invalid input syntax for type integer: "period"` at migration
+        // time. The generic overload fixes both: columns get the real
+        // Postgres enum type, matching Program.cs and any raw SQL.
+        b.HasPostgresEnum<UserRole>("user_role",
             ["superadmin", "school_admin", "principal", "accountant",
              "teacher", "parent", "student"]);
-        b.HasPostgresEnum("school_type", ["k12", "coaching", "college", "other"]);
-        b.HasPostgresEnum("school_plan", ["trial", "basic", "pro", "enterprise"]);
-        b.HasPostgresEnum("student_status",
+        b.HasPostgresEnum<SchoolType>("school_type", ["k12", "coaching", "college", "other"]);
+        b.HasPostgresEnum<SchoolPlan>("school_plan", ["trial", "basic", "pro", "enterprise"]);
+        b.HasPostgresEnum<StudentStatus>("student_status",
             ["active", "inactive", "transferred", "graduated"]);
-        b.HasPostgresEnum("gender", ["male", "female", "other"]);
-        b.HasPostgresEnum("student_category", ["GEN", "OBC", "SC", "ST", "EWS"]);
-        b.HasPostgresEnum("religion",
+        b.HasPostgresEnum<Gender>("gender", ["male", "female", "other"]);
+        b.HasPostgresEnum<StudentCategory>("student_category", ["GEN", "OBC", "SC", "ST", "EWS"]);
+        b.HasPostgresEnum<Religion>("religion",
             ["Hindu", "Muslim", "Sikh", "Christian", "Buddhist", "Jain", "Other"]);
-        b.HasPostgresEnum("transport_mode", ["self", "school_bus", "walk", "other"]);
-        b.HasPostgresEnum("sibling_relation", ["brother", "sister"]);
-        b.HasPostgresEnum("attendance_status",
+        b.HasPostgresEnum<TransportMode>("transport_mode", ["self", "school_bus", "walk", "other"]);
+        b.HasPostgresEnum<SiblingRelation>("sibling_relation", ["brother", "sister"]);
+        b.HasPostgresEnum<AttendanceStatus>("attendance_status",
             ["present", "absent", "late", "leave", "holiday"]);
-        b.HasPostgresEnum("attendance_mode", ["daily", "period"]);
-        b.HasPostgresEnum("teacher_attendance_status",
+        b.HasPostgresEnum<AttendanceMode>("attendance_mode", ["daily", "period"]);
+        b.HasPostgresEnum<TeacherAttendanceStatus>("teacher_attendance_status",
             ["present", "absent", "half_day", "leave", "unpaid_leave",
              "on_duty", "holiday"]);
-        b.HasPostgresEnum("exam_type",
+        b.HasPostgresEnum<ExamType>("exam_type",
             ["unit_test", "periodic", "term", "half_yearly", "annual", "custom"]);
-        b.HasPostgresEnum("exam_status",
+        b.HasPostgresEnum<ExamStatus>("exam_status",
             ["draft", "scheduled", "in_progress", "completed", "published"]);
-        b.HasPostgresEnum("exam_result_status", ["absent", "present", "exempt"]);
-        b.HasPostgresEnum("grading_scale_type", ["marks", "grade", "gpa", "pass_fail"]);
-        b.HasPostgresEnum("fee_frequency",
+        b.HasPostgresEnum<ExamResultStatus>("exam_result_status", ["absent", "present", "exempt"]);
+        b.HasPostgresEnum<GradingScaleType>("grading_scale_type", ["marks", "grade", "gpa", "pass_fail"]);
+        b.HasPostgresEnum<FeeFrequency>("fee_frequency",
             ["one_time", "monthly", "quarterly", "half_yearly", "annual"]);
-        b.HasPostgresEnum("invoice_status",
+        b.HasPostgresEnum<InvoiceStatus>("invoice_status",
             ["pending", "partial", "paid", "overdue", "cancelled"]);
-        b.HasPostgresEnum("payment_method",
+        b.HasPostgresEnum<PaymentMethod>("payment_method",
             ["cash", "cheque", "upi", "card", "bank_transfer", "razorpay"]);
-        b.HasPostgresEnum("payment_status",
+        b.HasPostgresEnum<PaymentStatus>("payment_status",
             ["pending", "success", "failed", "refunded"]);
-        b.HasPostgresEnum("timetable_status", ["draft", "active", "archived"]);
-        b.HasPostgresEnum("variation_type",
+        b.HasPostgresEnum<TimetableStatus>("timetable_status", ["draft", "active", "archived"]);
+        b.HasPostgresEnum<VariationType>("variation_type",
             ["substitute_teacher", "cancelled", "rescheduled", "guest_lecture", "custom"]);
-        b.HasPostgresEnum("payroll_status",
+        b.HasPostgresEnum<PayrollStatus>("payroll_status",
             ["draft", "generated", "locked", "paid", "failed"]);
-        b.HasPostgresEnum("payroll_run_status",
+        b.HasPostgresEnum<PayrollRunStatus>("payroll_run_status",
             ["draft", "generated", "locked", "transfer_queued",
              "transfer_completed", "cancelled"]);
-        b.HasPostgresEnum("leave_status", ["pending", "approved", "rejected"]);
-        b.HasPostgresEnum("poll_status", ["draft", "active", "closed"]);
-        b.HasPostgresEnum("poll_category",
+        b.HasPostgresEnum<LeaveStatus>("leave_status", ["pending", "approved", "rejected"]);
+        b.HasPostgresEnum<PollStatus>("poll_status", ["draft", "active", "closed"]);
+        b.HasPostgresEnum<PollCategory>("poll_category",
             ["satisfaction", "event", "canteen", "general"]);
 
         // SchoolConfiguration needs ICryptoService, so it cannot be discovered by
