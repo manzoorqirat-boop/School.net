@@ -26,20 +26,8 @@ public sealed class AttendanceConfiguration : IEntityTypeConfiguration<Attendanc
         b.Property(x => x.Class).IsRequired();
         b.Property(x => x.Section).IsRequired();
         b.Property(x => x.Date).HasColumnType("date").IsRequired();
-
-        // Mode maps to the native Postgres enum "attendance_mode" — registered
-        // via HasPostgresEnum<AttendanceMode>(...) in AppDbContext.OnModelCreating
-        // and NpgsqlDataSourceBuilder.MapEnum<AttendanceMode>(...) in Program.cs.
-        // No per-property conversion needed here; EF Core picks up the native
-        // enum column type automatically from the CLR type registration.
         b.Property(x => x.Mode).HasColumnName("mode");
-
-        // NOTE: If Status is also an enum and is ever referenced as a string
-        // literal (check constraint, index filter, seed data), apply the same
-        // .HasConversion<string>() here. Leaving as default (int) for now since
-        // no string comparison was found against it in this file.
         b.Property(x => x.Status).HasColumnName("status");
-
         b.Property(x => x.Period).HasColumnType("smallint");
 
         // period ⇔ mode='period'. The Mongo model only had min/max; the mode
