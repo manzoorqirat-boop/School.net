@@ -472,39 +472,79 @@ using (var scope = app.Services.CreateScope())
                 .Where(x => x.Length > 0)
                 .ToList();
 
+            // Applied over a RAW Npgsql connection, deliberately not through
+            // EF. EF logs every statement at Info and every failure at Error
+            // with a full stack trace; a ~180-statement script exceeded
+            // Railway's log rate limit ("Messages dropped: 149") and buried the
+            // real fatal error. Raw commands produce no EF logging.
             var applied = 0;
             var skipped = 0;
-            foreach (var stmt in statements)
+            var failures = new List<string>();
+
+            await using (var ddlConn = new NpgsqlConnection(connString))
             {
-                try
+                await ddlConn.OpenAsync();
+
+                foreach (var stmt in statements)
                 {
-                    await db.Database.ExecuteSqlRawAsync(stmt);
-                    applied++;
-                }
-                catch (Npgsql.PostgresException ex) when (
-                    ex.SqlState is "42P07"    // duplicate_table
-                                or "42710"    // duplicate_object (type, constraint)
-                                or "42P06"    // duplicate_schema
-                                or "42701")   // duplicate_column
-                {
-                    skipped++;
+                    await using var ddlCmd = ddlConn.CreateCommand();
+                    ddlCmd.CommandText = stmt;
+                    try
+                    {
+                        await ddlCmd.ExecuteNonQueryAsync();
+                        applied++;
+                    }
+                    catch (PostgresException ex) when (
+                        ex.SqlState is "42P07"    // duplicate_table
+                                    or "42710"    // duplicate_object (type, constraint)
+                                    or "42P06"    // duplicate_schema
+                                    or "42701"    // duplicate_column
+                                    or "42P16")   // invalid_table_definition (re-adding a PK)
+                    {
+                        // Left over from a previous boot that died part-way.
+                        skipped++;
+                    }
+                    catch (PostgresException ex)
+                    {
+                        // Record and continue: one bad statement must not stop
+                        // the other 179. Reported in full afterwards.
+                        failures.Add($"[{ex.SqlState}] {ex.MessageText} :: "
+                                   + stmt[..Math.Min(stmt.Length, 120)].Replace("\n", " "));
+                    }
                 }
             }
 
             bootLog.LogWarning(
-                "Schema creation complete: {Applied} statement(s) applied, {Skipped} already existed.",
-                applied, skipped);
+                "Schema creation complete: {Applied} applied, {Skipped} already existed, {Failed} failed.",
+                applied, skipped, failures.Count);
 
-            // Fail loudly rather than limping on. If the script produced nothing
-            // (or everything was skipped) the tables still do not exist, and the
-            // next thing to run is the seeder, which would die on `users` with a
-            // stack trace that points at the wrong place entirely.
-            if (applied == 0)
-                throw new InvalidOperationException(
-                    "Schema creation produced no applied statements. The database is " +
-                    "still empty and startup cannot continue. GenerateCreateScript() " +
-                    "returned " + ddl.Length + " characters / " + statements.Count +
-                    " statement(s).");
+            // Cap the output — a genuinely broken script would otherwise trip
+            // the same rate limit that hid the problem in the first place.
+            foreach (var f in failures.Take(10))
+                bootLog.LogError("Schema statement failed: {Failure}", f);
+            if (failures.Count > 10)
+                bootLog.LogError("...and {More} more failed statement(s).", failures.Count - 10);
+
+            // Fail fast if the tables STILL are not there. Limping on means the
+            // seeder dies next with a stack trace pointing at the wrong place.
+            await using (var verify = new NpgsqlConnection(connString))
+            {
+                await verify.OpenAsync();
+                await using var verifyCmd = verify.CreateCommand();
+                verifyCmd.CommandText = @"
+                    SELECT EXISTS (
+                        SELECT 1 FROM pg_catalog.pg_class c
+                        JOIN pg_catalog.pg_namespace n ON n.oid = c.relnamespace
+                        WHERE n.nspname = 'public' AND c.relname = 'users'
+                    )";
+                var usersExists = (bool)(await verifyCmd.ExecuteScalarAsync() ?? false);
+                if (!usersExists)
+                    throw new InvalidOperationException(
+                        $"Schema creation ran {statements.Count} statement(s) "
+                      + $"({applied} applied, {skipped} skipped, {failures.Count} failed) "
+                      + "but the 'users' table still does not exist. See the "
+                      + "'Schema statement failed' entries above for the cause.");
+            }
         }
     }
 
