@@ -21,24 +21,141 @@ public sealed class PollsController : ControllerBase
     public PollsController(AppDbContext db, ITenantContext tenant, IAuditWriter audit)
     { _db = db; _tenant = tenant; _audit = audit; }
 
+    private static bool IsPollAdmin(string? role) =>
+        role is "school_admin" or "principal" or "superadmin";
+
     [HttpGet]
     public async Task<IActionResult> List(CancellationToken ct)
     {
         // Targeted to the caller's role, or created by admin roles (who see all).
         var role = _tenant.Role ?? "";
         var q = _db.Polls.AsNoTracking().Include(p => p.Questions).ThenInclude(x => x.Options).AsQueryable();
-        if (role is not ("school_admin" or "principal" or "superadmin"))
+        if (!IsPollAdmin(role))
             q = q.Where(p => p.TargetRoles.Contains(role) && p.Status == PollStatus.Active);
+
+        var polls = await q.OrderByDescending(p => p.CreatedAt).ToListAsync(ct);
+        var ids = polls.Select(p => p.Id).ToList();
+
+        // hasVoted + totalVotes per poll. The Node original returned both and
+        // the port dropped them, so nothing could tell an answered poll from an
+        // unanswered one — a parent saw no "Voted" badge, and the dashboard had
+        // no way to surface polls still waiting on them.
+        //
+        // Two grouped queries rather than one per poll: a class with 40 parents
+        // and 10 polls would otherwise be 20 round trips.
+        var uid = _tenant.UserId;
+        var votedIds = uid is null
+            ? new HashSet<Guid>()
+            : (await _db.PollVotes.AsNoTracking()
+                .Where(v => ids.Contains(v.PollId) && v.UserId == uid)
+                .Select(v => v.PollId).ToListAsync(ct)).ToHashSet();
+
+        var counts = await _db.PollVotes.AsNoTracking()
+            .Where(v => ids.Contains(v.PollId))
+            .GroupBy(v => v.PollId)
+            .Select(g => new { PollId = g.Key, Count = g.Count() })
+            .ToListAsync(ct);
+        var countMap = counts.ToDictionary(x => x.PollId, x => x.Count);
+
         // Bare array — the page does (data || []).map(...).
-        return Ok(await q.OrderByDescending(p => p.CreatedAt).ToListAsync(ct));
+        return Ok(polls.Select(p => PollWithVoteState(p, votedIds.Contains(p.Id),
+            countMap.GetValueOrDefault(p.Id))));
     }
+
+    /// <summary>
+    /// Serialises a poll with the caller-specific vote state attached. Built by
+    /// hand rather than with an anonymous spread because C# has no object
+    /// spread — every field the client reads has to be listed.
+    /// </summary>
+    private static object PollWithVoteState(Poll p, bool hasVoted, int totalVotes) => new
+    {
+        _id = p.Id,
+        p.Title,
+        p.Description,
+        category = EnumWireParse.ToWire(p.Category),
+        status = EnumWireParse.ToWire(p.Status),
+        p.TargetRoles,
+        p.StartDate,
+        p.EndDate,
+        p.ShowResultsBeforeClose,
+        p.AllowAnonymous,
+        p.CreatedAt,
+        questions = p.Questions.Select(q => new
+        {
+            _id = q.Id,
+            q.Text,
+            options = q.Options.Select(o => new { _id = o.Id, o.Text }),
+        }),
+        hasVoted,
+        totalVotes,
+    };
 
     [HttpGet("{id:guid}")]
     public async Task<IActionResult> Get(Guid id, CancellationToken ct)
     {
         var p = await _db.Polls.AsNoTracking().Include(x => x.Questions).ThenInclude(q => q.Options)
             .FirstOrDefaultAsync(x => x.Id == id, ct);
-        return p is null ? NotFound(new { error = "Not found" }) : Ok(p);
+        if (p is null) return NotFound(new { error = "Not found" });
+
+        var uid = _tenant.UserId;
+        var myVote = uid is null ? null : await _db.PollVotes.AsNoTracking()
+            .Include(v => v.Answers)
+            .FirstOrDefaultAsync(v => v.PollId == id && v.UserId == uid, ct);
+
+        // Results visibility, ported from the Node original: admins always,
+        // everyone else only when the poll says so or after it closes. Without
+        // this an ordinary voter could read live tallies on a poll configured
+        // to hide them until close.
+        var canSeeResults = IsPollAdmin(_tenant.Role)
+            || p.ShowResultsBeforeClose
+            || p.Status == PollStatus.Closed;
+
+        object? results = null;
+        var totalVotes = await _db.PollVotes.AsNoTracking().CountAsync(v => v.PollId == id, ct);
+
+        if (canSeeResults)
+        {
+            var tallies = await _db.PollVoteAnswers.AsNoTracking()
+                .Where(a => a.Vote.PollId == id)
+                .GroupBy(a => new { a.QuestionId, a.OptionId })
+                .Select(g => new { g.Key.QuestionId, g.Key.OptionId, Count = g.Count() })
+                .ToListAsync(ct);
+
+            // Zero-filled nested map: results[questionId][optionId] = count.
+            // Filling every option matters — an option nobody picked must read
+            // 0, not be absent, or the client's percentage maths divides wrong.
+            var map = new Dictionary<string, Dictionary<string, int>>();
+            foreach (var q in p.Questions)
+            {
+                var inner = new Dictionary<string, int>();
+                foreach (var o in q.Options) inner[o.Id.ToString()] = 0;
+                map[q.Id.ToString()] = inner;
+            }
+            foreach (var t in tallies)
+            {
+                var qk = t.QuestionId.ToString();
+                var ok = t.OptionId.ToString();
+                if (map.TryGetValue(qk, out var inner) && inner.ContainsKey(ok)) inner[ok] = t.Count;
+            }
+            results = map;
+        }
+
+        var basePoll = PollWithVoteState(p, myVote is not null, totalVotes);
+
+        return Ok(new
+        {
+            poll = basePoll,
+            hasVoted = myVote is not null,
+            myVote = myVote is null ? null : new
+            {
+                _id = myVote.Id,
+                answers = myVote.Answers.Select(a => new { questionId = a.QuestionId, optionId = a.OptionId }),
+                votedAt = myVote.SubmittedAt,   // PollVote has SubmittedAt, not CreatedAt
+            },
+            results,
+            totalVotes,
+            canSeeResults,
+        });
     }
 
     [HttpPost]
