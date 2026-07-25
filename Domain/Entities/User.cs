@@ -60,7 +60,7 @@ public class User : IEntity, IAuditable
     /// ⚠️ This column is NOT created by the boot-time schema bootstrap, which
     /// only ever CREATEs missing tables and never ALTERs existing ones. `users`
     /// already exists, so its CREATE TABLE is skipped as a duplicate and this
-    /// column with it. Apply migrations/003_notices_birthdays.sql by hand.
+    /// column with it. Apply migrations/001_notices_birthdays.sql by hand.
     /// </summary>
     public DateOnly? Dob { get; set; }
 
