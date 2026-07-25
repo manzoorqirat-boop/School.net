@@ -84,7 +84,11 @@ public sealed class BirthdaysController : ControllerBase
             .Select(s => new
             {
                 s.Id,
-                s.Name,
+                // FirstName/LastName, not DisplayName: that is a computed C#
+                // property with no column behind it, so EF cannot translate it.
+                // Joined in memory below.
+                s.FirstName,
+                s.LastName,
                 s.Class,
                 s.Section,
                 Month = s.Dob!.Value.Month,
@@ -111,7 +115,8 @@ public sealed class BirthdaysController : ControllerBase
             .Select(s => new
             {
                 _id      = s.Id,
-                s.Name,
+                Name     = string.Join(' ', new[] { s.FirstName, s.LastName }
+                                              .Where(x => !string.IsNullOrWhiteSpace(x))),
                 type     = "student",
                 @class   = (string?)s.Class,
                 Section  = (string?)s.Section,
