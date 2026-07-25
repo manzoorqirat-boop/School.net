@@ -134,8 +134,63 @@ public sealed class ExceptionHandlingMiddleware
         DbUpdateConcurrencyException =>
             (409, ErrorCodes.DuplicateError, "Record was modified by another request", null, null),
 
-        _ => (500, ErrorCodes.InternalError, ex.Message, null, null),
+        // Any OTHER database error on save.
+        //
+        // Without this, an unmapped SqlState falls to the catch-all below and
+        // reports EF's outer text — "An error occurred while saving the entity
+        // changes. See the inner exception for details." — which names neither
+        // the table, the column, nor the failure. That message is a dead end
+        // for the caller AND for whoever reads the log. The four cases above
+        // cover the EXPECTED violations; everything else (42703 undefined
+        // column, 42804 datatype mismatch, 22P02 invalid text representation,
+        // 42P01 undefined table…) lands here and now says what it actually was.
+        DbUpdateException dbu when FindPostgres(dbu) is PostgresException pg4 =>
+            (500, ErrorCodes.InternalError, DescribePostgres(pg4), null, null),
+
+        _ => (500, ErrorCodes.InternalError, Flatten(ex), null, null),
     };
+
+    /// <summary>Walks the InnerException chain for the underlying Npgsql error.</summary>
+    private static PostgresException? FindPostgres(Exception? ex)
+    {
+        for (var e = ex; e is not null; e = e.InnerException)
+            if (e is PostgresException pg) return pg;
+        return null;
+    }
+
+    /// <summary>
+    /// Everything Postgres told us that is useful for diagnosis. The SqlState
+    /// is the single most valuable field and is always first.
+    /// </summary>
+    private static string DescribePostgres(PostgresException pg)
+    {
+        var parts = new List<string> { $"[{pg.SqlState}] {pg.MessageText}" };
+        if (!string.IsNullOrEmpty(pg.Detail))         parts.Add($"detail: {pg.Detail}");
+        if (!string.IsNullOrEmpty(pg.TableName))      parts.Add($"table: {pg.TableName}");
+        if (!string.IsNullOrEmpty(pg.ColumnName))     parts.Add($"column: {pg.ColumnName}");
+        if (!string.IsNullOrEmpty(pg.ConstraintName)) parts.Add($"constraint: {pg.ConstraintName}");
+        if (!string.IsNullOrEmpty(pg.DataTypeName))   parts.Add($"type: {pg.DataTypeName}");
+        if (!string.IsNullOrEmpty(pg.Hint))           parts.Add($"hint: {pg.Hint}");
+        return string.Join(" · ", parts);
+    }
+
+    /// <summary>
+    /// Flattens an exception chain into one line. Several exceptions that reach
+    /// here carry their real cause one or two levels down and a useless wrapper
+    /// message on top — Npgsql's "Cannot write DateTime with Kind=Unspecified"
+    /// and EF's save wrapper are both this shape.
+    /// </summary>
+    private static string Flatten(Exception ex)
+    {
+        var parts = new List<string>();
+        for (var e = (Exception?)ex; e is not null; e = e.InnerException)
+        {
+            var line = $"{e.GetType().Name}: {e.Message}";
+            if (!parts.Contains(line, StringComparer.Ordinal)) parts.Add(line);
+            if (parts.Count >= 4) break;   // deep chains add noise, not signal
+        }
+        return string.Join(" → ", parts);
+    }
 
     /// <summary>
     /// Best-effort field name out of a Postgres unique-violation.
