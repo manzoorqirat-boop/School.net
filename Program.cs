@@ -1,3 +1,4 @@
+using Hangfire;
 using Hangfire.PostgreSql;
 using System.Text;
 using System.Text.Json;
@@ -17,7 +18,6 @@ using QMSoft.Api.Infrastructure;
 using QMSoft.Api.Infrastructure.Auth;
 using QMSoft.Api.Infrastructure.Crypto;
 using QMSoft.Api.Infrastructure.Tenancy;
-using Hangfire;
 using QMSoft.Api.Middleware;
 
 var builder = WebApplication.CreateBuilder(args);
@@ -551,10 +551,10 @@ using (var scope = app.Services.CreateScope())
 
             // Cap the output — a genuinely broken script would otherwise trip
             // the same rate limit that hid the problem in the first place.
-            foreach (var f in failures.Take(10))
+            foreach (var f in failures.Take(30))
                 bootLog.LogError("Schema statement failed: {Failure}", f);
-            if (failures.Count > 10)
-                bootLog.LogError("...and {More} more failed statement(s).", failures.Count - 10);
+            if (failures.Count > 30)
+                bootLog.LogError("...and {More} more failed statement(s).", failures.Count - 30);
 
             // Fail fast if the tables STILL are not there. Limping on means the
             // seeder dies next with a stack trace pointing at the wrong place.
@@ -577,13 +577,22 @@ using (var scope = app.Services.CreateScope())
 
                 var stillMissing = expectedTables.Where(t => !nowPresent.Contains(t)).ToList();
                 if (stillMissing.Count > 0)
-                    throw new InvalidOperationException(
-                        $"Schema creation ran {statements.Count} statement(s) "
-                      + $"({applied} applied, {skipped} skipped, {failures.Count} failed) "
-                      + $"but {stillMissing.Count} table(s) still do not exist: "
-                      + string.Join(", ", stillMissing.Take(15))
-                      + (stillMissing.Count > 15 ? ", …" : "")
-                      + ". See the 'Schema statement failed' entries above for the cause.");
+                {
+                    // Log, do NOT throw. Same stance as the payroll-trigger guard
+                    // below: a missing table degrades the features that use it,
+                    // but throwing here crash-loops the container and takes the
+                    // ENTIRE API offline — including the endpoints that work and
+                    // the logs needed to diagnose this.
+                    bootLog.LogCritical(
+                        "Schema creation ran {Statements} statement(s) ({Applied} applied, " +
+                        "{Skipped} skipped, {Failed} failed) but {Count} table(s) still do " +
+                        "not exist: {Names}. Requests touching these will fail with 42P01. " +
+                        "See the 'Schema statement failed' entries above for the cause.",
+                        statements.Count, applied, skipped, failures.Count,
+                        stillMissing.Count,
+                        string.Join(", ", stillMissing.Take(25))
+                            + (stillMissing.Count > 25 ? ", …" : ""));
+                }
             }
         }
     }
