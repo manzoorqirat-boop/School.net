@@ -128,7 +128,6 @@ dsb.MapEnum<PayrollRunStatus>("payroll_run_status", EnumMemberNameTranslator.For
 dsb.MapEnum<LeaveStatus>("leave_status", EnumMemberNameTranslator.For<LeaveStatus>());
 dsb.MapEnum<PollStatus>("poll_status", EnumMemberNameTranslator.For<PollStatus>());
 dsb.MapEnum<PollCategory>("poll_category", EnumMemberNameTranslator.For<PollCategory>());
-dsb.MapEnum<NoticePriority>("notice_priority", EnumMemberNameTranslator.For<NoticePriority>());
 var dataSource = dsb.Build();
 
 builder.Services.AddDbContext<AppDbContext>(opt =>
