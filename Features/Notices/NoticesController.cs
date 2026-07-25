@@ -135,8 +135,8 @@ public sealed class NoticesController : ControllerBase
             Priority        = ParsePriority(input.Priority),
             TargetRoles     = Clean(input.TargetRoles),
             TargetClasses   = Clean(input.TargetClasses),
-            PublishAt       = input.PublishAt,
-            ExpiresAt       = input.ExpiresAt,
+            PublishAt       = Utc(input.PublishAt),
+            ExpiresAt       = Utc(input.ExpiresAt),
             IsPinned        = input.IsPinned ?? false,
             CreatedByUserId = _tenant.UserId,
         };
@@ -181,8 +181,8 @@ public sealed class NoticesController : ControllerBase
         // always round-trip the full object on edit.
         if (input.PublishAt is not null || input.ExpiresAt is not null)
         {
-            n.PublishAt = input.PublishAt;
-            n.ExpiresAt = input.ExpiresAt;
+            n.PublishAt = Utc(input.PublishAt);
+            n.ExpiresAt = Utc(input.ExpiresAt);
         }
 
         ValidateWindow(n);
@@ -213,6 +213,37 @@ public sealed class NoticesController : ControllerBase
     }
 
     // ── Helpers ───────────────────────────────────────────────────────────
+
+    /// <summary>
+    /// Coerces an inbound date to UTC before it reaches Npgsql.
+    ///
+    /// Both clients send dates as bare "YYYY-MM-DD" (DateField's output).
+    /// System.Text.Json deserialises that to a DateTime with
+    /// Kind=Unspecified, and EF maps DateTime? to `timestamp with time zone`.
+    /// Npgsql REFUSES that combination and throws:
+    ///
+    ///   ArgumentException: Cannot write DateTime with Kind=Unspecified to
+    ///   PostgreSQL type 'timestamp with time zone'
+    ///
+    /// That is not a PostgresException, so ExceptionHandlingMiddleware cannot
+    /// unwrap it into anything useful — the client just gets a bare
+    /// "Internal server error" while every read path keeps working.
+    ///
+    /// A date with no time is treated as midnight UTC rather than shifted by
+    /// the server's offset: publish/expiry are day-granular decisions, and
+    /// silently moving "expires on the 30th" by 5½ hours is worse than the
+    /// half-day of imprecision.
+    ///
+    /// NOTE: the same hazard exists on Poll.StartDate/EndDate, which pass
+    /// straight through unconverted. It has not fired only because nothing
+    /// currently posts a date to that endpoint.
+    /// </summary>
+    private static DateTime? Utc(DateTime? d) => d is null ? null : d.Value.Kind switch
+    {
+        DateTimeKind.Utc   => d,
+        DateTimeKind.Local => d.Value.ToUniversalTime(),
+        _                  => DateTime.SpecifyKind(d.Value, DateTimeKind.Utc),
+    };
 
     private static NoticePriority ParsePriority(string? wire) => wire switch
     {
