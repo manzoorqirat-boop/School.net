@@ -305,6 +305,16 @@ public sealed class SchoolUpdateRequest
     public int? FeeBillingDay { get; set; }
     public int? FeeReminderDay { get; set; }
     public bool? LeaveRequireApproval { get; set; }
+
+    // ── UPI / QR collection ───────────────────────────────────────────────
+    // Both already existed on the School entity but were absent here, so there
+    // was no way to save them — which is why /upi-intent always answered
+    // UPI_NOT_CONFIGURED even though the whole deep-link path was built.
+    /// <summary>VPA, e.g. "school@hdfcbank". Empty string clears it.</summary>
+    public string? PaymentVpa { get; set; }
+
+    /// <summary>Name the payer sees in their UPI app. Falls back to the school name.</summary>
+    public string? PaymentPayeeName { get; set; }
 }
 
 /// <summary>POST /api/class-teachers.</summary>
