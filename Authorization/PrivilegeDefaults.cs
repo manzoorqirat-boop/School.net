@@ -68,6 +68,19 @@ public static class PrivilegeDefaults
         ["payroll:manage"]  = [Accountant, SchoolAdmin, SuperAdmin],
         ["payroll:process"] = [Accountant, SchoolAdmin, SuperAdmin],
 
+        // ── Notice board ──────────────────────────────────────────────────
+        // Everyone reads; only the roles that speak for the school write.
+        // Targeting is enforced server-side regardless of this privilege —
+        // 'notice:view' grants access to the board, not to every notice on it.
+        ["notice:view"]   = [Teacher, Accountant, Principal, SchoolAdmin, SuperAdmin, Parent, Student],
+        ["notice:manage"] = [Principal, SchoolAdmin, SuperAdmin],
+
+        // ── Birthdays ─────────────────────────────────────────────────────
+        // Staff-facing. Parents and students are excluded: a roster of every
+        // child's birthday is a contact-list-shaped thing to hand out, and the
+        // widget returns names alongside dates.
+        ["birthday:view"] = [Teacher, Principal, SchoolAdmin, SuperAdmin, Accountant],
+
         // ── Notifications ─────────────────────────────────────────────────
         ["notify:send"] = [Teacher, Principal, SchoolAdmin, SuperAdmin],
 
