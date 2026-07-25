@@ -54,6 +54,17 @@ public class User : IEntity, IAuditable
     public string? Phone { get; set; }
 
     /// <summary>
+    /// Staff date of birth, for the birthday widget. Nullable and never
+    /// required — most existing rows will not have it.
+    ///
+    /// ⚠️ This column is NOT created by the boot-time schema bootstrap, which
+    /// only ever CREATEs missing tables and never ALTERs existing ones. `users`
+    /// already exists, so its CREATE TABLE is skipped as a duplicate and this
+    /// column with it. Apply migrations/003_notices_birthdays.sql by hand.
+    /// </summary>
+    public DateOnly? Dob { get; set; }
+
+    /// <summary>
     /// Present because timetable/page.tsx reads `teacher.name || teacher.fullName`.
     /// The Mongo User has no fullName virtual — the frontend is defensively
     /// coding against a field that never arrives. Kept as a computed alias so the
