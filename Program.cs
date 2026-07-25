@@ -1,4 +1,3 @@
-using Hangfire;
 using Hangfire.PostgreSql;
 using System.Text;
 using System.Text.Json;
@@ -18,6 +17,7 @@ using QMSoft.Api.Infrastructure;
 using QMSoft.Api.Infrastructure.Auth;
 using QMSoft.Api.Infrastructure.Crypto;
 using QMSoft.Api.Infrastructure.Tenancy;
+using Hangfire;
 using QMSoft.Api.Middleware;
 
 var builder = WebApplication.CreateBuilder(args);
@@ -426,34 +426,65 @@ using (var scope = app.Services.CreateScope())
         // app's own tables never appeared. The next statement then died with
         // 42P01 on `payrolls`.
         //
-        // Check for a table we actually own, then apply the model's DDL
-        // directly. GenerateCreateScript() emits the same SQL EnsureCreated
-        // would have, including CREATE TYPE for all 28 Postgres enums.
-        bool ours;
+        // Compare the FULL model against the database, not one sentinel table.
+        //
+        // This used to probe for `payrolls` alone and skip the whole script when
+        // it existed. A boot that created some tables and died part-way (or a
+        // model that gained tables after the first deploy) then left the rest
+        // permanently absent: every later boot saw `payrolls`, logged "schema
+        // already present", and created nothing. That is exactly how
+        // `fee_invoices` went missing while the app otherwise ran fine — the
+        // failure only surfaced at the first request that touched fees, as
+        // 42P01 masked into a generic 500 by ExceptionHandlingMiddleware.
+        //
+        // GenerateCreateScript() emits the same SQL EnsureCreated would have,
+        // including CREATE TYPE for all 28 Postgres enums. It is re-run in full
+        // whenever ANY table is missing; the duplicate-object catch below makes
+        // the already-present statements no-ops.
+        var expectedTables = db.Model.GetEntityTypes()
+            .Select(e => e.GetTableName())
+            .Where(n => !string.IsNullOrEmpty(n))
+            .Select(n => n!)
+            .Distinct(StringComparer.Ordinal)
+            .ToList();
+
+        List<string> missingTables;
         await using (var probe = new NpgsqlConnection(connString))
         {
             await probe.OpenAsync();
             await using var probeCmd = probe.CreateCommand();
+            // relkind 'r' = ordinary table, 'p' = partitioned table.
             probeCmd.CommandText = @"
-                SELECT EXISTS (
-                    SELECT 1 FROM pg_catalog.pg_class c
-                    JOIN pg_catalog.pg_namespace n ON n.oid = c.relnamespace
-                    WHERE n.nspname = 'public' AND c.relname = 'payrolls'
-                )";
-            ours = (bool)(await probeCmd.ExecuteScalarAsync() ?? false);
+                SELECT c.relname
+                FROM pg_catalog.pg_class c
+                JOIN pg_catalog.pg_namespace n ON n.oid = c.relnamespace
+                WHERE n.nspname = 'public' AND c.relkind IN ('r', 'p')";
+
+            var present = new HashSet<string>(StringComparer.Ordinal);
+            await using (var rdr = await probeCmd.ExecuteReaderAsync())
+                while (await rdr.ReadAsync())
+                    present.Add(rdr.GetString(0));
+
+            missingTables = expectedTables.Where(t => !present.Contains(t)).ToList();
         }
 
-        if (ours)
+        if (missingTables.Count == 0)
         {
-            bootLog.LogInformation("Application schema already present; nothing to create.");
+            bootLog.LogInformation(
+                "Application schema already present: all {Count} model table(s) exist.",
+                expectedTables.Count);
         }
         else
         {
             bootLog.LogWarning(
-                "No EF migrations are compiled into this build and the application " +
-                "schema is missing. Creating it from the model. Generate and commit " +
-                "Migrations/ (dotnet ef migrations add InitialCreate) for versioned " +
-                "schema changes.");
+                "No EF migrations are compiled into this build and {Missing} of {Total} " +
+                "model table(s) are missing ({Names}). Creating the schema from the " +
+                "model. Generate and commit Migrations/ (dotnet ef migrations add " +
+                "InitialCreate) for versioned schema changes.",
+                missingTables.Count,
+                expectedTables.Count,
+                string.Join(", ", missingTables.Take(15))
+                    + (missingTables.Count > 15 ? ", …" : ""));
 
             var ddl = db.Database.GenerateCreateScript();
 
@@ -527,23 +558,32 @@ using (var scope = app.Services.CreateScope())
 
             // Fail fast if the tables STILL are not there. Limping on means the
             // seeder dies next with a stack trace pointing at the wrong place.
+            // Re-check EVERY table that was missing, not just `users`. Verifying
+            // one table is what let a partial schema pass as complete.
             await using (var verify = new NpgsqlConnection(connString))
             {
                 await verify.OpenAsync();
                 await using var verifyCmd = verify.CreateCommand();
                 verifyCmd.CommandText = @"
-                    SELECT EXISTS (
-                        SELECT 1 FROM pg_catalog.pg_class c
-                        JOIN pg_catalog.pg_namespace n ON n.oid = c.relnamespace
-                        WHERE n.nspname = 'public' AND c.relname = 'users'
-                    )";
-                var usersExists = (bool)(await verifyCmd.ExecuteScalarAsync() ?? false);
-                if (!usersExists)
+                    SELECT c.relname
+                    FROM pg_catalog.pg_class c
+                    JOIN pg_catalog.pg_namespace n ON n.oid = c.relnamespace
+                    WHERE n.nspname = 'public' AND c.relkind IN ('r', 'p')";
+
+                var nowPresent = new HashSet<string>(StringComparer.Ordinal);
+                await using (var rdr = await verifyCmd.ExecuteReaderAsync())
+                    while (await rdr.ReadAsync())
+                        nowPresent.Add(rdr.GetString(0));
+
+                var stillMissing = expectedTables.Where(t => !nowPresent.Contains(t)).ToList();
+                if (stillMissing.Count > 0)
                     throw new InvalidOperationException(
                         $"Schema creation ran {statements.Count} statement(s) "
                       + $"({applied} applied, {skipped} skipped, {failures.Count} failed) "
-                      + "but the 'users' table still does not exist. See the "
-                      + "'Schema statement failed' entries above for the cause.");
+                      + $"but {stillMissing.Count} table(s) still do not exist: "
+                      + string.Join(", ", stillMissing.Take(15))
+                      + (stillMissing.Count > 15 ? ", …" : "")
+                      + ". See the 'Schema statement failed' entries above for the cause.");
             }
         }
     }
