@@ -131,7 +131,6 @@ public class AppDbContext : DbContext
         b.HasPostgresEnum("poll_status", ["draft", "active", "closed"]);
         b.HasPostgresEnum("poll_category",
             ["satisfaction", "event", "canteen", "general"]);
-        b.HasPostgresEnum("notice_priority", ["normal", "important", "urgent"]);
 
         // SchoolConfiguration needs ICryptoService, so it cannot be discovered by
         // ApplyConfigurationsFromAssembly (which requires a parameterless ctor).
