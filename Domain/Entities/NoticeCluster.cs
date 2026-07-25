@@ -4,6 +4,15 @@ using QMSoft.Api.Common;
 
 namespace QMSoft.Api.Domain.Entities;
 
+/// <summary>
+/// Wire values are "normal" / "important" / "urgent".
+///
+/// Persisted as TEXT with a CHECK constraint, NOT as a native Postgres enum —
+/// see NoticeConfiguration for why. This CLR enum is the wire and in-memory
+/// representation only; the value converter in the configuration owns the
+/// translation, and its three literals must stay in step with
+/// ck_notices_priority.
+/// </summary>
 [JsonConverter(typeof(EnumMemberJsonConverter<NoticePriority>))]
 public enum NoticePriority
 {
