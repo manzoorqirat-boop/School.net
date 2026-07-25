@@ -1,5 +1,6 @@
 using Hangfire;
 using Hangfire.PostgreSql;
+using System.Globalization;
 using System.Text;
 using System.Text.Json;
 using System.Text.Json.Serialization;
@@ -8,6 +9,7 @@ using FluentValidation.AspNetCore;
 using Microsoft.AspNetCore.Authentication.JwtBearer;
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.EntityFrameworkCore;
+using Microsoft.EntityFrameworkCore.Metadata;
 using Microsoft.IdentityModel.Tokens;
 using Npgsql;
 using QMSoft.Api.Domain.Entities;
@@ -595,6 +597,182 @@ using (var scope = app.Services.CreateScope())
                             + (stillMissing.Count > 25 ? ", …" : ""));
                 }
             }
+        }
+
+        // ── Additive column reconciliation ────────────────────────────────
+        //
+        // Runs on EVERY boot, whether or not any table was missing.
+        //
+        // GenerateCreateScript only ever CREATEs. A column added to an entity
+        // whose table already exists is therefore never applied: the CREATE
+        // TABLE comes back 42P07 and is skipped whole, taking the new column
+        // with it. The first query touching that column dies with 42703 — and
+        // since the seeder runs before the first request is served, that is a
+        // boot crash-loop rather than one broken endpoint. `users.dob` is
+        // exactly this, and nothing in the previous bootstrap could have
+        // caught it.
+        //
+        // Scope is deliberately the safe half of the problem: columns the model
+        // has and the database does not, addable without touching existing
+        // rows. Nullable columns, and columns with a default, are emitted as
+        // ALTER TABLE ... ADD COLUMN. NOT NULL columns with no default are NOT
+        // — there is no correct value for the rows already there — and are
+        // reported for a hand-written migration instead.
+        //
+        // Renames, type changes and drops stay out of scope by design. At this
+        // level a rename is indistinguishable from an add plus a drop, and
+        // guessing wrong destroys data.
+        try
+        {
+            var tablesNow = new HashSet<string>(StringComparer.Ordinal);
+            var existingCols = new HashSet<string>(StringComparer.Ordinal);
+
+            await using (var colConn = new NpgsqlConnection(connString))
+            {
+                await colConn.OpenAsync();
+
+                await using (var tCmd = colConn.CreateCommand())
+                {
+                    tCmd.CommandText = @"
+                        SELECT c.relname
+                        FROM pg_catalog.pg_class c
+                        JOIN pg_catalog.pg_namespace n ON n.oid = c.relnamespace
+                        WHERE n.nspname = 'public' AND c.relkind IN ('r', 'p')";
+                    await using var rdr = await tCmd.ExecuteReaderAsync();
+                    while (await rdr.ReadAsync()) tablesNow.Add(rdr.GetString(0));
+                }
+
+                await using (var cCmd = colConn.CreateCommand())
+                {
+                    cCmd.CommandText = @"
+                        SELECT table_name || '.' || column_name
+                        FROM information_schema.columns
+                        WHERE table_schema = 'public'";
+                    await using var rdr = await cCmd.ExecuteReaderAsync();
+                    while (await rdr.ReadAsync()) existingCols.Add(rdr.GetString(0));
+                }
+            }
+
+            var toAdd = new List<(string Table, string Sql, string Label)>();
+            var needManual = new List<string>();
+            var seen = new HashSet<string>(StringComparer.Ordinal);
+
+            foreach (var et in db.Model.GetEntityTypes())
+            {
+                var table = et.GetTableName();
+                if (string.IsNullOrEmpty(table)) continue;
+
+                // Table absent entirely → the CREATE path owns it, not this one.
+                if (!tablesNow.Contains(table)) continue;
+
+                var store = StoreObjectIdentifier.Table(table, et.GetSchema());
+
+                foreach (var prop in et.GetProperties())
+                {
+                    var col = prop.GetColumnName(store);
+                    if (string.IsNullOrEmpty(col)) continue;
+
+                    var key = $"{table}.{col}";
+                    // TPH and owned types map several entities onto one table;
+                    // each shared column would otherwise be considered twice.
+                    if (!seen.Add(key)) continue;
+                    if (existingCols.Contains(key)) continue;
+
+                    var type = prop.GetColumnType(store);
+                    if (string.IsNullOrEmpty(type))
+                    {
+                        needManual.Add($"{key} (no resolvable column type)");
+                        continue;
+                    }
+
+                    // HasDefaultValueSql wins; HasDefaultValue is rendered for
+                    // the handful of literal shapes actually used in this model.
+                    var def = prop.GetDefaultValueSql(store);
+                    if (def is null)
+                    {
+                        var v = prop.GetDefaultValue(store);
+                        def = v switch
+                        {
+                            null            => null,
+                            bool bl         => bl ? "TRUE" : "FALSE",
+                            string s        => "'" + s.Replace("'", "''") + "'",
+                            IFormattable num when v is int or long or short or decimal or double or float
+                                            => num.ToString(null, CultureInfo.InvariantCulture),
+                            _               => null,
+                        };
+                    }
+
+                    if (!prop.IsNullable && def is null)
+                    {
+                        // Adding this would fail on any non-empty table.
+                        needManual.Add($"{key} ({type}, NOT NULL, no default)");
+                        continue;
+                    }
+
+                    var sql = $"ALTER TABLE \"{table}\" ADD COLUMN IF NOT EXISTS \"{col}\" {type}"
+                            + (def is null ? "" : $" DEFAULT {def}")
+                            + (prop.IsNullable ? "" : " NOT NULL");
+
+                    toAdd.Add((table, sql, key));
+                }
+            }
+
+            if (toAdd.Count == 0 && needManual.Count == 0)
+            {
+                bootLog.LogInformation("Column reconciliation: no additive changes needed.");
+            }
+
+            if (toAdd.Count > 0)
+            {
+                bootLog.LogWarning(
+                    "Column reconciliation: adding {Count} missing column(s): {Names}",
+                    toAdd.Count, string.Join(", ", toAdd.Select(x => x.Label).Take(25))
+                        + (toAdd.Count > 25 ? ", …" : ""));
+
+                await using var alterConn = new NpgsqlConnection(connString);
+                await alterConn.OpenAsync();
+
+                foreach (var (_, sql, label) in toAdd)
+                {
+                    await using var alterCmd = alterConn.CreateCommand();
+                    alterCmd.CommandText = sql;
+                    try
+                    {
+                        await alterCmd.ExecuteNonQueryAsync();
+                        bootLog.LogInformation("Added column {Column}.", label);
+                    }
+                    catch (PostgresException ex) when (ex.SqlState == "42701")
+                    {
+                        // duplicate_column — added concurrently by another
+                        // instance booting at the same time. Benign.
+                    }
+                    catch (PostgresException ex)
+                    {
+                        // Never fatal: one column that will not apply must not
+                        // cost the whole API its boot.
+                        bootLog.LogError(
+                            "Column add failed for {Column}: [{State}] {Message}",
+                            label, ex.SqlState, ex.MessageText);
+                    }
+                }
+            }
+
+            if (needManual.Count > 0)
+            {
+                bootLog.LogWarning(
+                    "Column reconciliation: {Count} column(s) CANNOT be added automatically " +
+                    "and need a hand-written migration (existing rows have no value for " +
+                    "them): {Names}",
+                    needManual.Count, string.Join(", ", needManual.Take(25))
+                        + (needManual.Count > 25 ? ", …" : ""));
+            }
+        }
+        catch (Exception ex)
+        {
+            bootLog.LogError(ex,
+                "Column reconciliation failed. The API will still start; any column added " +
+                "to the model since the table was created is still missing and will surface " +
+                "as 42703 on the first query that touches it.");
         }
     }
 
