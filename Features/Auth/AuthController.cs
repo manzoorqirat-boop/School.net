@@ -80,6 +80,12 @@ public sealed class AuthController : ControllerBase
         var user = await _db.Users
             .IgnoreQueryFilters()
             .Include(u => u.RefreshTokens)
+            // ParentOf drives `parentOf` in the session payload. Without this
+            // Include the collection is never loaded, ToSafeJson projects an
+            // EMPTY array, and every client that resolves a parent's child from
+            // the session gets nothing — the portal's attendance tile stays
+            // blank because `sid` is null and the fetch never fires.
+            .Include(u => u.ParentOf)
             .FirstOrDefaultAsync(u =>
                 u.Username == req.Username.ToLowerInvariant() && u.SchoolId == schoolId, ct);
 
@@ -140,6 +146,7 @@ public sealed class AuthController : ControllerBase
         var user = await _db.Users
             .IgnoreQueryFilters()
             .Include(u => u.RefreshTokens)
+            .Include(u => u.ParentOf)      // refresh must rebuild the SAME payload as login
             .FirstOrDefaultAsync(u => u.Id == userId, ct);
 
         if (user is null || !user.IsActive)
@@ -327,6 +334,7 @@ public sealed class AuthController : ControllerBase
         return await _db.Users
             .IgnoreQueryFilters()      // own row, by id from the verified JWT
             .Include(u => u.RefreshTokens)
+            .Include(u => u.ParentOf)  // /me is what the client re-hydrates from
             .FirstOrDefaultAsync(u => u.Id == id, ct);
     }
 
