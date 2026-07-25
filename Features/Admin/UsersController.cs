@@ -240,6 +240,14 @@ public sealed class SchoolsController : ControllerBase
         if (req.FeeBillingDay is { } fbd) s.FeeBillingDay = fbd;
         if (req.FeeReminderDay is { } frd) s.FeeReminderDay = frd;
         if (req.LeaveRequireApproval is { } lra) s.LeaveRequireApproval = lra;
+
+        // Trimmed, and an explicit "" clears the field — the office needs a way
+        // to turn UPI collection back off, and null here means "not sent".
+        if (req.PaymentVpa is not null)
+            s.PaymentVpa = string.IsNullOrWhiteSpace(req.PaymentVpa) ? null : req.PaymentVpa.Trim();
+        if (req.PaymentPayeeName is not null)
+            s.PaymentPayeeName = string.IsNullOrWhiteSpace(req.PaymentPayeeName) ? null : req.PaymentPayeeName.Trim();
+
         await _db.SaveChangesAsync(ct);
         await _audit.WriteAsync("school.update", "school", id.ToString(), ct: ct);
         return Ok(s);
