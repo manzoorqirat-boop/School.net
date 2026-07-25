@@ -1,11 +1,28 @@
 using Microsoft.EntityFrameworkCore;
 using Microsoft.EntityFrameworkCore.Metadata.Builders;
+using Microsoft.EntityFrameworkCore.Storage.ValueConversion;
 using QMSoft.Api.Domain.Entities;
 
 namespace QMSoft.Api.Data.Configurations;
 
 public sealed class NoticeConfiguration : IEntityTypeConfiguration<Notice>
 {
+    /// <summary>
+    /// CLR enum ↔ wire string. Written out explicitly rather than derived from
+    /// the [EnumMember] attributes: these three literals must match
+    /// ck_notices_priority exactly, and a mapping that is generated from
+    /// attribute metadata can drift from the constraint without anything
+    /// failing until a write hits the database.
+    /// </summary>
+    private static readonly ValueConverter<NoticePriority, string> PriorityConverter =
+        new(
+            v => v == NoticePriority.Urgent    ? "urgent"
+               : v == NoticePriority.Important ? "important"
+               :                                 "normal",
+            v => v == "urgent"    ? NoticePriority.Urgent
+               : v == "important" ? NoticePriority.Important
+               :                    NoticePriority.Normal);
+
     public void Configure(EntityTypeBuilder<Notice> b)
     {
         b.ToTable("notices");
@@ -15,9 +32,31 @@ public sealed class NoticeConfiguration : IEntityTypeConfiguration<Notice>
         b.Property(x => x.Title).IsRequired();
         b.Property(x => x.Body).IsRequired();
 
-        // Native enum type `notice_priority` — registered in AppDbContext
-        // (HasPostgresEnum) and mapped in Program.cs (dsb.MapEnum).
-        b.Property(x => x.Priority).HasColumnName("priority");
+        // Stored as TEXT with a CHECK, not a native Postgres enum.
+        //
+        // The CLR enum stays — the wire contract ("normal"/"important"/
+        // "urgent") and NoticePriority in C# are unchanged — but the column is
+        // plain text and the value converter below does the translation.
+        //
+        // Native enums have now broken this schema twice: `status <> 3` on
+        // fee_invoices (an int comparison against an enum column, which killed
+        // CREATE TABLE) and notice_priority (an InvalidCastException on write
+        // whenever the Npgsql type mapping is not perfectly in step with the
+        // database). Both failures need THREE things to agree — HasPostgresEnum
+        // in AppDbContext, dsb.MapEnum in Program.cs, and the CREATE TYPE
+        // actually having run — and a mismatch surfaces only at runtime, on
+        // write, as an error that names neither the column nor the type.
+        //
+        // A text column with a CHECK gives the same integrity, is validated by
+        // the database in one place, and cannot fail this way.
+        b.Property(x => x.Priority)
+            .HasColumnName("priority")
+            .HasColumnType("text")
+            .HasConversion(PriorityConverter);
+
+        b.ToTable(t => t.HasCheckConstraint(
+            "ck_notices_priority",
+            "priority IN ('normal', 'important', 'urgent')"));
 
         b.Property(x => x.IsPinned).HasDefaultValue(false);
         b.Property(x => x.IsDeleted).HasDefaultValue(false);
