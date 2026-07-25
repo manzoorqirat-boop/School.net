@@ -70,6 +70,7 @@ public class AppDbContext : DbContext
     public DbSet<PollVoteAnswer> PollVoteAnswers => Set<PollVoteAnswer>();
     public DbSet<RolePrivilege> RolePrivileges => Set<RolePrivilege>();
     public DbSet<AuditLog> AuditLogs => Set<AuditLog>();
+    public DbSet<Notice> Notices => Set<Notice>();
 
     protected override void OnModelCreating(ModelBuilder b)
     {
@@ -130,6 +131,7 @@ public class AppDbContext : DbContext
         b.HasPostgresEnum("poll_status", ["draft", "active", "closed"]);
         b.HasPostgresEnum("poll_category",
             ["satisfaction", "event", "canteen", "general"]);
+        b.HasPostgresEnum("notice_priority", ["normal", "important", "urgent"]);
 
         // SchoolConfiguration needs ICryptoService, so it cannot be discovered by
         // ApplyConfigurationsFromAssembly (which requires a parameterless ctor).
