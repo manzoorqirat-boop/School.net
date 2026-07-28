@@ -6,6 +6,8 @@ using QMSoft.Api.Common;
 using QMSoft.Api.Data;
 using QMSoft.Api.Domain.Entities;
 using QMSoft.Api.Infrastructure.Tenancy;
+using Hangfire;
+using QMSoft.Api.Features.Notifications;
 
 namespace QMSoft.Api.Features.Notices;
 
@@ -17,9 +19,11 @@ public sealed class NoticesController : ControllerBase
     private readonly AppDbContext _db;
     private readonly ITenantContext _tenant;
     private readonly IAuditWriter _audit;
+    private readonly IBackgroundJobClient _jobs;
 
-    public NoticesController(AppDbContext db, ITenantContext tenant, IAuditWriter audit)
-    { _db = db; _tenant = tenant; _audit = audit; }
+    public NoticesController(AppDbContext db, ITenantContext tenant, IAuditWriter audit,
+                             IBackgroundJobClient jobs)
+    { _db = db; _tenant = tenant; _audit = audit; _jobs = jobs; }
 
     /// <summary>Admin roles see everything: drafts, expired, soft-deleted excepted.</summary>
     private static bool IsNoticeAdmin(string? role) =>
@@ -146,6 +150,13 @@ public sealed class NoticesController : ControllerBase
         _db.Notices.Add(n);
         await _db.SaveChangesAsync(ct);
         await _audit.WriteAsync("notice.create", "Notice", n.Id.ToString(), ct: ct);
+
+        // Queued, not awaited. Expo's relay is a third-party HTTP call; holding
+        // the request open for it would make posting a notice feel slow and, if
+        // exp.host is down, fail a save that has already succeeded. The job
+        // re-reads the notice and re-checks IsLive, so a future-dated notice
+        // stays quiet until it is actually published.
+        _jobs.Enqueue<PushService>(p => p.SendNoticeAsync(n.Id, CancellationToken.None));
 
         return Ok(Wire(n, await AuthorNamesAsync([n], ct)));
     }
