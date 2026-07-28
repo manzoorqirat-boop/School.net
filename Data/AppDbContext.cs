@@ -71,6 +71,7 @@ public class AppDbContext : DbContext
     public DbSet<RolePrivilege> RolePrivileges => Set<RolePrivilege>();
     public DbSet<AuditLog> AuditLogs => Set<AuditLog>();
     public DbSet<Notice> Notices => Set<Notice>();
+    public DbSet<DeviceToken> DeviceTokens => Set<DeviceToken>();
 
     protected override void OnModelCreating(ModelBuilder b)
     {
