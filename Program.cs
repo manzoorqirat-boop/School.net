@@ -232,6 +232,15 @@ builder.Services.AddScoped<QMSoft.Api.Features.Students.ParentLinkService>();
 builder.Services.AddScoped<QMSoft.Api.Features.Payments.RazorpayService>();
 builder.Services.AddScoped<QMSoft.Api.Features.Documents.PdfService>();
 builder.Services.AddScoped<QMSoft.Api.Features.Jobs.LateFeeJob>();
+builder.Services.AddScoped<QMSoft.Api.Features.Notifications.PushService>();
+// Named client: Expo's relay is a third party on the far side of the internet,
+// so it gets its own timeout rather than inheriting a default that would hold a
+// Hangfire worker open indefinitely if exp.host stalls.
+builder.Services.AddHttpClient(nameof(QMSoft.Api.Features.Notifications.PushService), c =>
+{
+    c.Timeout = TimeSpan.FromSeconds(20);
+    c.DefaultRequestHeaders.Add("accept", "application/json");
+});
 
 // Hangfire — Postgres-backed recurring jobs (replaces BullMQ). Uses the same DB.
 builder.Services.AddHangfire(cfg => cfg.UsePostgreSqlStorage(opt => opt.UseNpgsqlConnection(connString)));
