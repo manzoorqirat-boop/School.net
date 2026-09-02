@@ -270,6 +270,39 @@ public sealed class AuthController : ControllerBase
         return Ok(new { ok = true });
     }
 
+    // ── POST /api/auth/delete-account-request ───────────────────────────────
+    //
+    // Google Play (and most privacy regimes) require a working data-deletion
+    // path for any app that supports account creation. Accounts here are
+    // provisioned by the school rather than self-registered, and the records
+    // tied to one — attendance, marks, fee/payment history — commonly carry
+    // their OWN retention obligations independent of the account. So this
+    // records a reviewable REQUEST rather than performing an immediate hard
+    // delete; a school admin actions it via the existing audit log view
+    // (GET /api/audit-logs?action=auth.delete_account_requested, already
+    // gated by the audit:view privilege — no new admin endpoint needed).
+
+    public sealed record DeleteAccountRequest(string? Reason);
+
+    [HttpPost("delete-account-request")]
+    [Authorize]
+    public async Task<IActionResult> RequestAccountDeletion([FromBody] DeleteAccountRequest? req, CancellationToken ct)
+    {
+        var user = await CurrentUserAsync(ct);
+        if (user is null) return Unauthorized(new { error = "User not found" });
+
+        var meta = System.Text.Json.JsonSerializer.Serialize(new
+        {
+            reason = req?.Reason,
+            username = user.Username,
+            name = user.Name,
+            role = EnumWireBridge.RoleToWire(user.Role),
+        });
+        await _audit.WriteAsync("auth.delete_account_requested", "user", user.Id.ToString(), meta, ct);
+
+        return Ok(new { ok = true });
+    }
+
     // ── POST /api/auth/verify-password ────────────────────────────────────
 
     public sealed record VerifyPasswordRequest(string? Password);
