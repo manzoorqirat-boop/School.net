@@ -1,0 +1,127 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Privacy Policy — QMSoft School</title>
+<style>
+  body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+         color: #18181B; max-width: 720px; margin: 0 auto; padding: 48px 24px 96px;
+         line-height: 1.6; }
+  h1 { font-size: 26px; color: #18181B; margin-bottom: 4px; }
+  .updated { color: #A1A1AA; font-size: 13px; margin-bottom: 32px; }
+  h2 { font-size: 18px; color: #18181B; margin-top: 36px; margin-bottom: 10px; }
+  p { color: #52525B; margin-bottom: 12px; }
+  ul { margin: 0 0 12px; padding-left: 20px; }
+  li { color: #52525B; margin-bottom: 8px; }
+  a { color: #5B34E0; font-weight: 600; text-decoration: none; }
+  a:hover { text-decoration: underline; }
+  .note { background: #F4F4F7; border-radius: 12px; padding: 16px 20px; font-size: 13px;
+          color: #52525B; margin-bottom: 32px; }
+</style>
+</head>
+<body>
+
+<h1>Privacy Policy</h1>
+<p class="updated">QMSoft School · Last updated: September 2026</p>
+
+<p>
+  This app is provided to families and staff of a school using QMSoft School's
+  management platform. Accounts are created and managed by your school's
+  administration, not by self-registration — this policy explains what the
+  app and its backend collect on the school's behalf, why, and what control
+  you have over it.
+</p>
+
+<h2>Information we collect</h2>
+<p>Depending on your role, the app handles:</p>
+<ul>
+  <li>Identity and contact details — name, date of birth, gender, blood group, address, phone number, and email address.</li>
+  <li>Family details — parent/guardian names, phone numbers, occupations, and relationship to the student.</li>
+  <li>Enrollment records — class, section, roll number, admission details, and academic year.</li>
+  <li>Government ID — only the last 4 digits of an Aadhaar number are ever stored; the full number is never written to our database.</li>
+  <li>Academic records — attendance, exam marks, report cards, and timetables.</li>
+  <li>Financial records — fee invoices and payment history connected to a student's account. Payments made by UPI go bank-to-bank between you and the school; the app never handles your bank credentials or UPI PIN.</li>
+  <li>Device information — a push-notification token and device platform (iOS/Android), so the school can send you notices, invoice reminders, and poll alerts.</li>
+  <li>Usage/security logs — sign-in timestamps, IP address, and the actions taken by administrative accounts, kept for audit and security purposes.</li>
+</ul>
+
+<h2>Children's information</h2>
+<p>
+  This app is used to manage school records for students, some of whom are
+  children under 13. Student accounts and the records tied to them are
+  created and controlled by the school, acting as the data controller — the
+  school, not a parent acting alone, provisions student logins. In practice,
+  a student's account is intended to be operated by, or together with,
+  their parent or guardian rather than by a young child independently.
+  Parents and guardians can contact the school directly, or use the contact
+  details below, to review, correct, or request deletion of a child's data.
+</p>
+
+<h2>How information is used</h2>
+<ul>
+  <li>To operate core school functions — attendance, grading, fee collection, timetabling, and notices.</li>
+  <li>To send push notifications for notices, fee reminders, and polls.</li>
+  <li>To maintain security and accountability through sign-in and admin-action logs.</li>
+</ul>
+<p>We do not sell personal information, and we do not use it for behavioral advertising.</p>
+
+<h2>Who can see your information</h2>
+<p>
+  Data is scoped to your own school — staff and families at one school cannot
+  see another school's records. Within a school, visibility follows role:
+  teachers see their classes' academic data, office staff see fee and
+  admission records, and parents see only their own children's records. All
+  of this runs on infrastructure we operate; we do not share personal data
+  with third parties except the payment and notification services described
+  below.
+</p>
+
+<h2>Third-party services</h2>
+<ul>
+  <li>Push notifications are delivered via Expo's notification relay, which forwards to Apple (APNs) and Google (FCM) — only a device token and message content pass through it.</li>
+  <li>Online payments, where enabled by a school, are processed by Razorpay; UPI payments go directly between payer and school bank accounts and never touch our servers.</li>
+</ul>
+
+<h2>Data retention</h2>
+<p>
+  Academic, attendance, and financial records are retained for as long as
+  required by the school's own record-keeping obligations, which commonly
+  extend beyond a student's enrollment. Push-notification tokens are removed
+  automatically when a device is signed out or when Apple/Google report the
+  token as no longer valid.
+</p>
+
+<h2>Your choices</h2>
+<ul>
+  <li>Change your password any time from Settings.</li>
+  <li>Request a copy of, correction to, or deletion of your account and associated data — signed-in users can do this from Settings → Account → Delete my account. If you can't sign in, email us below from the address associated with your account, or contact your school's office directly.</li>
+  <li>Because academic and financial records may be subject to the school's own legal retention requirements, a deletion request is reviewed by your school's administration rather than actioned instantly — we'll let you know once it's handled.</li>
+</ul>
+
+<h2>Security</h2>
+<p>
+  Data is encrypted in transit (TLS) between the app and our servers. On your
+  device, your session token is stored using the operating system's secure,
+  encrypted storage (Keychain on iOS, Keystore-backed storage on Android)
+  rather than as plain text.
+</p>
+
+<h2>Contact us</h2>
+<p>Questions about this policy, or a request regarding your data, can be sent to:</p>
+<p><a href="mailto:noreply@qmsofts.com">noreply@qmsofts.com</a></p>
+
+<div class="note">
+  <strong>Note for the developer:</strong> this page is served directly by
+  the backend at <code>/privacy-policy.html</code> — no separate hosting
+  needed. One thing worth double-checking: <code>noreply@</code> addresses
+  are conventionally treated as send-only, and a mail server or spam filter
+  may silently drop replies sent to one. This page promises people they can
+  email in a deletion or data request — if <code>noreply@qmsofts.com</code>
+  doesn't actually receive and forward incoming mail somewhere a human reads,
+  that promise is broken. Worth confirming the inbox is live before this goes
+  out to real users.
+</div>
+
+</body>
+</html>
