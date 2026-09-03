@@ -52,7 +52,7 @@ public sealed class DevicesController : ControllerBase
             throw new AppException("Not an Expo push token", 400, ErrorCodes.ValidationError);
 
         var userId = _tenant.UserId
-            ?? throw new AppException("No user on token", 401, ErrorCodes.Unauthorized);
+            ?? throw new AppException("No user on token", 401, ErrorCodes.NotAuthenticated);
         var schoolId = _tenant.SchoolId ?? Guid.Empty;
 
         var existing = await _db.Set<DeviceToken>()
