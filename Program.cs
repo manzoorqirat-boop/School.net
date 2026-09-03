@@ -356,6 +356,13 @@ app.Use(async (ctx, next) =>
     await next();
 });
 
+// Serves wwwroot/ as-is — currently just the privacy policy page, at
+// /privacy-policy.html. Public, unauthenticated, no CORS/auth/sanitize
+// needed for a static legal page, so this sits ahead of all three. This is
+// also the URL to put in Google Play Console's "Privacy policy" field and
+// the Data Safety form: https://<this-api's-domain>/privacy-policy.html
+app.UseStaticFiles();
+
 app.UseCors();
 
 if (app.Environment.IsDevelopment())
